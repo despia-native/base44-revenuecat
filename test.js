@@ -225,6 +225,23 @@ async function testV3OldBuild () {
   console.log('  v3 old build: entitlements fall back to store history ✓')
 }
 
+async function testDestructured () {
+  // A natural (and AI-generated) usage shape: pull the methods off the module.
+  global.window = { navigator: { userAgent: 'Mozilla/5.0' }, localStorage: null }
+  global.self = global.window
+  const revenuecat = freshRequire()
+  const { user, plans, buy, has, restore, logout } = revenuecat
+  await user('u1')
+  assert.strictEqual(revenuecat.id, 'u1', 'destructured user() still binds identity')
+  assert.deepStrictEqual(await plans(), [])
+  assert.strictEqual((await buy('x')).ok, false)
+  assert.strictEqual(await has('premium'), false)
+  assert.deepStrictEqual((await restore()).active, [])
+  await logout()
+  assert.strictEqual(revenuecat.id, null)
+  console.log('  destructured methods keep working (no `this` crash) ✓')
+}
+
 async function testRedeemStub () {
   // Android never supports the redemption sheet; iOS on an old build resolves
   // {supported:false} after the silent probe.
@@ -394,6 +411,7 @@ async function testV4OldBuild () {
   await testV3OldBuild()
   await testV4()
   await testV4OldBuild()
+  await testDestructured()
   await testRedeemStub()
   await testServer()
   console.log('all tests passed')

@@ -810,6 +810,10 @@
           .then(function () { return { ok: true, supported: true, source: 'redeem', platform: os(), runtime: 4, error: null, code: null } })
           .catch(function () { return unsupported })
       }
+      // Same deferred gate as the identity schemes: an unproven build routes
+      // revenuecat://redeem into its license-gated catch-all, which can raise
+      // a native alert. Only fire once an envelope has proven the bridge.
+      if (!self._v3) return Promise.resolve(unsupported)
       return chained('result', function () {
         fire('revenuecat://redeem')
         // Newer builds ack presentation on the result channel; silence means
@@ -869,6 +873,16 @@
       }
     }
   }
+
+  // Bind every method to the module so destructured usage keeps working —
+  //   const { plans, buy, has } = revenuecat
+  // is a natural thing to write (and for an AI builder to generate), and
+  // without this it would throw on `this`. Accessors (id/native/os/runtime)
+  // are left untouched.
+  Object.getOwnPropertyNames(iap).forEach(function (key) {
+    var d = Object.getOwnPropertyDescriptor(iap, key)
+    if (d && typeof d.value === 'function') iap[key] = d.value.bind(iap)
+  })
 
   return iap
 }))
