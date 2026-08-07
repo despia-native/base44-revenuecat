@@ -32,7 +32,7 @@ if (await revenuecat.has('premium')) showPremium()
 | `center()` | **LIVE** | Customer Center |
 | `redeem()` | **LIVE** — iOS on current builds; Android/browser/old builds resolve `{supported:false}` | Apple offer-code sheet |
 | `proof()` | **P3** | signed entitlement token — optional once §6's zero-secret path exists |
-| `on('result'|'purchase'|'center')` | **LIVE** | promise-first; window callbacks never required |
+| `on('result'|'purchase'|'center'|'user')` | **LIVE** | promise-first; window callbacks never required. `'user'` fans out the identity envelope when a native login/logout settles |
 
 Error model: **never-throw by default** — every call resolves; failures carry
 `{ ok:false, code, error, cancelled }`. Rationale: Base44 apps are largely AI-written; an
@@ -54,6 +54,16 @@ Per-feature degradation is the law of this package: every native capability is p
 timeout and falls back (V3 old build → history-based entitlements; V4 old build → `products`
 action mapping). A new package on an old binary must degrade, never hang or throw. New
 binaries with old packages keep working because wire formats are only ever extended.
+
+Two rules the classic runtime forces, because an unknown `revenuecat://` command there falls
+into a **license-gated catch-all that can raise a native alert**:
+
+1. **Never fire a V3 scheme at an unproven build.** `login`, `logout`, and `redeem` wait for
+   the *deferred gate* — an answered envelope (`runtime: 3`) proves the binary carries the
+   bridge. Until then they stay local/`unsupported`. V4 has no such hazard (an unknown action
+   simply rejects), so probes there are fire-and-forget.
+2. **Every method is bound to the module**, so `const { plans, buy } = revenuecat` — the shape
+   an AI builder naturally writes — cannot throw on `this`.
 
 ## 3. Identity: user / logout / account switch
 
