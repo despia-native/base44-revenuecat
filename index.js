@@ -214,8 +214,25 @@
   }
 
   function keepProject (envelope) {
-    try { if (envelope && envelope.project && !iap.project) iap.project = envelope.project } catch (e) {}
+    try {
+      if (envelope && envelope.project && !iap.project) iap.project = envelope.project
+      // An envelope with runtime:3 proves this V3 build carries the unified
+      // bridge — safe to use the identity session schemes from here on.
+      if (envelope && envelope.runtime === 3) {
+        iap._v3 = true
+        v3bind()
+      }
+    } catch (e) {}
     return envelope
+  }
+
+  // Deferred V3 session bind: fire the native login only once the build has
+  // proven (by answering an envelope) that it carries the identity bridge —
+  // old builds never see the probe, so they never show a stray prompt.
+  function v3bind () {
+    if (!iap._v3 || !iap._user || iap._v3bound || runtime() !== 3) return
+    iap._v3bound = true
+    fire('revenuecat://login?external_id=' + encodeURIComponent(iap._user))
   }
 
   // Map the V4 module's RC-flavored product row (older builds without the
@@ -424,6 +441,7 @@
         return Promise.resolve({ user: self._user, anonymous: !self._user })
       }
       self._user = id == null || id === '' ? null : String(id)
+      self._v3bound = false
       if (self._user && runtime() === 4) {
         // Forward-compatible session bind, fire-and-forget: newer builds carry
         // a native login action that merges anonymous history immediately;
@@ -431,6 +449,9 @@
         // identity mode (still correctly attributed). Never block app boot on
         // the probe.
         v4call('login', { external_id: self._user }, 8000).catch(function () {})
+      }
+      if (self._user && runtime() === 3) {
+        v3bind()   // fires only once a unified envelope has proven the build
       }
       return Promise.resolve({ user: self._user, anonymous: !self._user })
     },
@@ -448,14 +469,22 @@
     logout: function () {
       this._user = null
       this._catalog = null
+      this._v3bound = false
       if (runtime() === 4) {
         // Fire-and-forget: newer builds rotate the native RevenueCat user to
         // a fresh anonymous id; older builds ignore it. The local clear above
         // is what stops this package from sending the old id either way.
         v4call('logout', {}, 8000).catch(function () {})
       }
+      if (runtime() === 3 && this._v3) {
+        fire('revenuecat://logout')   // build proven — rotate the native user too
+      }
       return Promise.resolve({ user: null, anonymous: true })
     },
+
+    // V3 capability facts, learned from envelopes (see keepProject/v3bind).
+    _v3: false,
+    _v3bound: false,
 
     // All products across your RevenueCat offerings, with live store pricing
     // (localized price string, currency, period, free-trial/intro phases) in

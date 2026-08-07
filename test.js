@@ -63,6 +63,7 @@ async function testWeb () {
 }
 
 async function testV3 () {
+  const fired = []
   const win = {
     navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' },
     localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } }
@@ -70,8 +71,26 @@ async function testV3 () {
   // The native runtime intercepts assignments to window.despia.
   Object.defineProperty(win, 'despia', {
     set (cmd) {
+      fired.push(cmd)
       setTimeout(() => {
-        if (cmd.startsWith('revenuecat://products')) {
+        if (cmd.startsWith('revenuecat://login')) {
+          win.revenueCatUser = Object.assign({}, envelope(3), {
+            new: false, entitlements: { active: ['premium'], all: ['premium'] }
+          })
+          if (typeof win.onRevenueCatUser === 'function') win.onRevenueCatUser(win.revenueCatUser)
+        } else if (cmd.startsWith('revenuecat://logout')) {
+          win.revenueCatUser = Object.assign({}, envelope(3), {
+            user: null, anonymous: true, new: false, entitlements: { active: [], all: [] }
+          })
+          if (typeof win.onRevenueCatUser === 'function') win.onRevenueCatUser(win.revenueCatUser)
+        } else if (cmd.startsWith('revenuecat://redeem')) {
+          win.revenueCatResult = {
+            ok: true, cancelled: false, restored: false, source: 'redeem', product: null,
+            transaction: null, entitlements: [], user: 'u1', platform: 'ios', runtime: 3,
+            error: null, code: 'presented'
+          }
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+        } else if (cmd.startsWith('revenuecat://products')) {
           win.revenueCatProducts = envelope(3)
           if (typeof win.onRevenueCatProducts === 'function') win.onRevenueCatProducts(win.revenueCatProducts)
         } else if (cmd.startsWith('revenuecat://customer')) {
@@ -148,7 +167,26 @@ async function testV3 () {
   assert.deepStrictEqual(status.active, ['premium'])
   assert.strictEqual(await iap.has('premium'), true)
   assert.strictEqual(await iap.has('nope'), false)
-  console.log('  v3: products/buy/paywall/restore/status/has over the scheme bridge ✓')
+
+  // Deferred session bind: once envelopes proved the build, the native login
+  // fired for the identified user — and never before the first envelope.
+  await new Promise((r) => setTimeout(r, 250))
+  assert.ok(fired.some((c) => c.startsWith('revenuecat://login?external_id=u1')), 'native login fired after capability proof')
+  const firstEnvelopeCmd = fired.findIndex((c) => c.startsWith('revenuecat://products'))
+  const loginCmd = fired.findIndex((c) => c.startsWith('revenuecat://login'))
+  assert.ok(loginCmd > firstEnvelopeCmd, 'login only after an envelope answered')
+
+  // Offer-code redemption on a build that acks it.
+  const red = await iap.redeem()
+  assert.strictEqual(red.supported, true)
+  assert.strictEqual(red.ok, true)
+
+  // Logout clears local identity AND rotates the native user on proven builds.
+  await iap.logout()
+  assert.strictEqual(iap.id, null)
+  await new Promise((r) => setTimeout(r, 250))
+  assert.ok(fired.some((c) => c === 'revenuecat://logout'), 'native logout fired on proven build')
+  console.log('  v3: products/buy/paywall/restore/status/has + login/logout/redeem bridge ✓')
 }
 
 async function testV3OldBuild () {

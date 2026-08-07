@@ -21,8 +21,8 @@ if (await revenuecat.has('premium')) showPremium()
 
 | Method | Status | Notes |
 |---|---|---|
-| `user(id)` | **LIVE** (identity-per-call) → P2 (native session) | primary name; `login(id)` kept as alias |
-| `logout()` | LIVE (local) → **P2 native required** | see §3 — true logout needs the bridge |
+| `user(id)` | **LIVE** — per-call identity + native session bind on current builds | primary name; `login(id)` kept as alias |
+| `logout()` | **LIVE** — native `logOut()` on current builds, local clear everywhere | see §3 |
 | `plans(offering?)` | **LIVE** | nested plan shape derived from the unified catalog envelope |
 | `products(ids?)` / `offers(offering?)` | **LIVE** | flat unified products / full envelope |
 | `buy(id, options?)` | **LIVE**; `options.offer` P2 | accepts plan id, kind, `$rc_` package id, or store product id |
@@ -30,7 +30,7 @@ if (await revenuecat.has('premium')) showPremium()
 | `has(entitlement)` | **LIVE** | CustomerInfo-backed, store-history fallback |
 | `info()` / `status()` / `restore()` | **LIVE** | `info()` adds per-entitlement detail |
 | `center()` | **LIVE** | Customer Center |
-| `redeem()` | LIVE stub → **P2 native** | forward-compatible: attempts the bridge, resolves `{supported:false}` on silence |
+| `redeem()` | **LIVE** — iOS on current builds; Android/browser/old builds resolve `{supported:false}` | Apple offer-code sheet |
 | `proof()` | **P3** | signed entitlement token — optional once §6's zero-secret path exists |
 | `on('result'|'purchase'|'center')` | **LIVE** | promise-first; window callbacks never required |
 
@@ -64,18 +64,7 @@ purchase, paywall, center, catalog, and customer call performs an inline Revenue
 correct: RevenueCat explicitly supports `logIn(newId)` directly from another identified user
 (no logout in between) — which is exactly what per-call identity does.
 
-**What is missing natively — yes, Despia must add bridge support (P2):**
-
-1. **Standalone login at session start.** Binding identity only at first purchase-ish call
-   delays anonymous-history merge and `new`-customer detection. Native `login` returns the
-   merge result (`created` flag) immediately.
-2. **True logout.** Nothing in d-ios, d-android, or the V4 module ever calls
-   `Purchases.logOut()` (verified — zero call sites). The device keeps the last identified
-   RevenueCat user, so on a shared device an account-app could read the previous user's
-   entitlements after app-logout. `revenuecat.logout()` today clears package state and stops
-   sending `external_id`; only the native bridge can rotate to a fresh anonymous id.
-
-**P2 native contract (all three runtimes, one shape):**
+**The native session bridge (SHIPPED — all three runtimes, one shape):**
 
 | Runtime | Call | Response channel |
 |---|---|---|
@@ -84,9 +73,13 @@ correct: RevenueCat explicitly supports `logIn(newId)` directly from another ide
 | V4 module | `login({external_id})` / `logout()` action | resolves the same envelope (+ mirrors the window channel) |
 
 Envelope: `{ ok, user, anonymous, new, entitlements:{active,all}, platform, runtime, error, code }`
-(`new` = RevenueCat `created`). `whoami` already exists on V4; V3 gets it for free via the
-`customer` envelope. The package's `user()`/`logout()` probe the native call with a short
-timeout and fall back to today's local mode — **no package update needed when builds roll out**.
+(`new` = RevenueCat `created`). Native `login` merges anonymous history at sign-in; native
+`logout` calls `Purchases.logOut()`, rotating to a fresh anonymous user so a shared device
+never shows the previous account's entitlements (an already-anonymous logout resolves as
+success — that state IS the goal). Rollout mechanics in the package (LIVE): on V4 the probe
+is fire-and-forget (older modules ignore it); on V3 the schemes fire only after an envelope
+has **proven** the build carries the bridge — the deferred bind — so old binaries never see a
+stray prompt. **No package update is needed as builds roll out.**
 
 Interim guidance (README, LIVE): apps with accounts gate on both —
 `const premium = user && await revenuecat.has('premium')` — which is correct on every build
@@ -223,10 +216,12 @@ tolerate unknown fields (both LIVE package adapters already do).
 - **P1 (done, this branch):** unified catalog/customer/result contract on V3+V4, the npm
   package (runtime adapter, plans/buy/paywall/has/info/restore/center/events, old-build
   fallbacks), zero-secret + secret server verification, SEO README.
-- **P2 (native, next):** login/logout session bridge · iOS intro/trial eligibility +
-  `intro.mode` · Google `offers[]` normalization + offer-targeted purchase · iOS signed
-  promotional-offer purchase · `redeem` bridge · entitlement detail in customer envelope.
-  Ships runtime-by-runtime; the LIVE package auto-upgrades via capability probes.
+- **P2a (done):** login/logout session bridge on all three runtimes · `redeem` bridge
+  (iOS sheet; Android settles `unsupported`) · package deferred-bind rollout mechanics.
+- **P2b (native, next):** iOS intro/trial eligibility + `intro.mode` · Google `offers[]`
+  normalization + offer-targeted purchase · iOS signed promotional-offer purchase ·
+  entitlement detail in the customer envelope. Ships runtime-by-runtime; the LIVE package
+  auto-upgrades via capability probes.
 - **P3 (infra, optional):** `proof()` signed entitlement tokens + Despia-side verification
   endpoint; package `strict` mode; Base44 marketplace listing/template.
 
