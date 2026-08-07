@@ -274,7 +274,8 @@ export interface RevenueCat {
   on(event: 'result', fn: (result: Result) => void): () => void
   on(event: 'purchase', fn: (customerInfo: unknown) => void): () => void
   on(event: 'center', fn: (event: { event: string, [key: string]: unknown }) => void): () => void
-  off(event: 'result' | 'purchase' | 'center', fn?: (...args: never[]) => void): void
+  on(event: 'user', fn: (env: { ok: boolean, user: string | null, anonymous: boolean, new?: boolean, entitlements?: { active: string[], all: string[] }, [key: string]: unknown }) => void): () => void
+  off(event: 'result' | 'purchase' | 'center' | 'user', fn?: (...args: never[]) => void): void
 }
 
 /** @deprecated Use the RevenueCat interface name; kept for early adopters. */

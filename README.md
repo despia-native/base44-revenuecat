@@ -271,6 +271,7 @@ await revenuecat.center()   // native manage / restore / cancel / refund UI, res
 const off = revenuecat.on('result', (r) => refresh())     // every purchase/paywall outcome
 revenuecat.on('purchase', () => refresh())                // store confirmed a transaction / renewals
 revenuecat.on('center', (e) => console.log(e.event))      // Customer Center activity
+revenuecat.on('user', (u) => refresh())                   // identity changed (login/logout settled)
 off()                                              // unsubscribe
 ```
 

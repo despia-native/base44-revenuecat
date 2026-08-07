@@ -825,12 +825,15 @@
 
     // Events: 'result' (every purchase/paywall outcome), 'purchase' (store
     // confirmed a transaction / customer info changed), 'center' (Customer
-    // Center activity). Returns an unsubscribe function.
+    // Center activity), 'user' (identity changed — native login/logout
+    // settled, with the unified user envelope). Returns an unsubscribe
+    // function.
     on: function (event, fn) {
       if (typeof fn !== 'function') return function () {}
       var cb = event === 'result' ? 'onRevenueCatResult'
         : event === 'purchase' ? 'onRevenueCatPurchase'
         : event === 'center' ? 'onRevenueCatCenter'
+        : event === 'user' ? 'onRevenueCatUser'
         : null
       if (!cb) { warn("unknown event '" + event + "'"); return function () {} }
       var remove = hub(cb).add(fn)

@@ -181,11 +181,16 @@ async function testV3 () {
   assert.strictEqual(red.supported, true)
   assert.strictEqual(red.ok, true)
 
-  // Logout clears local identity AND rotates the native user on proven builds.
+  // Logout clears local identity AND rotates the native user on proven builds,
+  // and the identity change reaches on('user') subscribers.
+  const userEvents = []
+  const offUser = iap.on('user', (u) => userEvents.push(u))
   await iap.logout()
   assert.strictEqual(iap.id, null)
   await new Promise((r) => setTimeout(r, 250))
   assert.ok(fired.some((c) => c === 'revenuecat://logout'), 'native logout fired on proven build')
+  assert.ok(userEvents.some((u) => u && u.anonymous === true), "on('user') saw the logout envelope")
+  offUser()
   console.log('  v3: products/buy/paywall/restore/status/has + login/logout/redeem bridge ✓')
 }
 
