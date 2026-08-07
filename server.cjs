@@ -9,17 +9,26 @@
 //   import { entitled } from 'npm:base44-revenuecat/server'
 //   const ok = await entitled(user.id, 'premium', { secret: secrets.get('RC_SECRET') })
 //
-// Auth: a RevenueCat SECRET API key (sk_...). Server-side only — never ship
-// it to the client. Configuration resolves in this order:
-//   1. opts.secret / opts.project
-//   2. env RC_SECRET / RC_PROJECT
-//   3. env REVENUECAT_SECRET_KEY / REVENUECAT_PROJECT_ID
+// Auth — two options, lowest friction first:
+//   • ZERO-SECRET: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+//     RevenueCat's v1 subscriber endpoint accepts public keys for reads, so
+//     the only config is a value that is public by definition. Pass { key }
+//     or set env RC_KEY. The key must be configured server-side (constant or
+//     env) — never read it from the request, or a caller could point the
+//     check at a different RevenueCat app.
+//   • SECRET: a RevenueCat secret key (sk_...) via { secret } / env RC_SECRET
+//     unlocks the v2 API path (project-scoped, higher limits). Server-side
+//     only — never ship it to the client.
+// Configuration resolves in this order:
+//   1. opts.secret / opts.key / opts.project
+//   2. env RC_SECRET / RC_KEY / RC_PROJECT
+//   3. env REVENUECAT_SECRET_KEY / REVENUECAT_PUBLIC_KEY / REVENUECAT_PROJECT_ID
 //
 // With a project id (the "Global project ID" from Despia > Your App >
-// Integrations > RevenueCat) the check uses RevenueCat's v2 API; without one —
-// or if v2 is unavailable for the key — it falls back to the v1 subscribers
-// API, which every RevenueCat secret key can call. Entitlements are always
-// matched by their human lookup key ("premium"), on either path.
+// Integrations > RevenueCat) AND a secret key, the check uses RevenueCat's
+// v2 API; otherwise — or if v2 is unavailable — it falls back to the v1
+// subscribers API. Entitlements are always matched by their human lookup key
+// ("premium"), on either path.
 
 'use strict'
 
@@ -41,12 +50,15 @@ function env (name) {
 
 function creds (opts) {
   opts = opts || {}
-  const secret = opts.secret || env('RC_SECRET') || env('REVENUECAT_SECRET_KEY')
+  const auth = opts.secret || opts.key ||
+    env('RC_SECRET') || env('RC_KEY') ||
+    env('REVENUECAT_SECRET_KEY') || env('REVENUECAT_PUBLIC_KEY')
   const project = opts.project || env('RC_PROJECT') || env('REVENUECAT_PROJECT_ID') || null
-  if (!secret) {
-    throw new Error('base44-revenuecat/server: missing RevenueCat secret API key. Pass { secret } or set the RC_SECRET environment variable (a server-side sk_... key from app.revenuecat.com -> Project settings -> API keys).')
+  if (!auth) {
+    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key — or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
   }
-  return { secret, project }
+  // Only secret keys may use the v2 API; public keys always ride v1.
+  return { secret: auth, project: auth.indexOf('sk_') === 0 ? project : null }
 }
 
 async function rcFetch (url, secret) {

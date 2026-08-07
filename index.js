@@ -4,11 +4,12 @@
 // One tiny promise-based API over the App Store (StoreKit) and Google Play
 // (Play Billing) purchase stack that Despia compiles into your binary:
 //
-//   import iap from 'base44-revenuecat'
-//   const products = await iap.products()   // real store prices, one JSON shape
-//   await iap.buy(products[0].id)           // native purchase sheet
-//   await iap.paywall()                     // RevenueCat native paywall
-//   if (await iap.has('premium')) unlock()  // client-side entitlement check
+//   import revenuecat from 'base44-revenuecat'
+//   await revenuecat.user(user.id)                    // your Base44 user id
+//   const plans = await revenuecat.plans()            // live store prices
+//   await revenuecat.buy('monthly')                   // native purchase sheet
+//   await revenuecat.paywall()                        // RevenueCat native paywall
+//   if (await revenuecat.has('premium')) unlock()     // entitlement gate
 //
 // Works on BOTH Despia runtimes with zero configuration:
 //   - Despia V3 (the classic runtime): URL-scheme bridge + window callbacks
@@ -186,7 +187,7 @@
       product: null,
       transaction: null,
       entitlements: [],
-      user: iap.user,
+      user: iap._user,
       platform: os(),
       runtime: runtime(),
       error: err && (err.message || err.error) || String(code),
@@ -199,7 +200,7 @@
   function webResult (source) {
     return {
       ok: false, cancelled: false, restored: false, source: source,
-      product: null, transaction: null, entitlements: [], user: iap.user,
+      product: null, transaction: null, entitlements: [], user: iap._user,
       platform: 'web', runtime: 0, error: 'Not running inside a Despia app.', code: 'web'
     }
   }
@@ -207,7 +208,7 @@
   function emptyStatus (code, error) {
     return {
       ok: false, active: [], all: [], subscriptions: [], purchases: [],
-      user: iap.user, anonymous: !iap.user, management: null,
+      user: iap._user, anonymous: !iap._user, management: null,
       platform: os(), runtime: runtime(), error: error || null, code: code || null
     }
   }
@@ -263,7 +264,7 @@
     return {
       ok: true, active: active, all: all,
       subscriptions: [], purchases: rows,
-      user: iap.user, anonymous: !iap.user, management: null,
+      user: iap._user, anonymous: !iap._user, management: null,
       platform: os(), runtime: runtime(), error: null, code: null
     }
   }
@@ -277,7 +278,7 @@
       all: ents.all || [],
       subscriptions: envelope.subscriptions || [],
       purchases: Array.isArray(rows) ? rows : [],
-      user: envelope.user || iap.user,
+      user: envelope.user || iap._user,
       anonymous: envelope.anonymous !== false,
       management: envelope.management || null,
       platform: envelope.platform || os(),
@@ -287,6 +288,95 @@
     }
   }
 
+  // ── plans: the nested view over the unified catalog envelope ────────────
+  // Wire format stays flat and stable across three native codebases; the
+  // pretty shape is computed here (presentation lives in the adapter).
+
+  var KIND = { weekly: 'weekly', monthly: 'monthly', annual: 'annual', lifetime: 'lifetime' }
+  var UNIT_DAYS = { day: 1, week: 7, month: 30, year: 365 }
+
+  function nestPrice (value, text, currency) {
+    return { value: value || 0, text: text || '', currency: currency || null }
+  }
+
+  function nestPeriod (iso, unit, value) {
+    if (!iso && !unit) return null
+    return { iso: iso || null, value: value == null ? 1 : value, unit: unit || null }
+  }
+
+  function toPlan (product) {
+    var intro = product.intro || null
+    var trial = null
+    var introOut = null
+    if (intro && intro.type === 'trial') {
+      trial = {
+        days: (UNIT_DAYS[intro.periodUnit] || 1) * (intro.periodCount == null ? 1 : intro.periodCount),
+        // null = unknown here; the store enforces eligibility at purchase time
+        // (P2 native eligibility turns this into a real boolean on iOS).
+        eligible: null
+      }
+    } else if (intro) {
+      introOut = {
+        // Heuristic until the envelope carries Apple's paymentMode natively:
+        // pay-as-you-go bills the intro price for multiple cycles, pay-up-front once.
+        type: intro.cycles > 1 ? 'payg' : 'upfront',
+        eligible: null,
+        price: nestPrice(intro.price, intro.priceString, product.currency),
+        period: nestPeriod(intro.period, intro.periodUnit, intro.periodCount),
+        cycles: intro.cycles == null ? 1 : intro.cycles
+      }
+    }
+    return {
+      id: KIND[product.packageType] || null,       // finalized in buildPlans
+      rcId: product.package || null,
+      product: product.id,
+      type: product.type,
+      kind: KIND[product.packageType] || 'custom',
+      title: product.title,
+      desc: product.desc,
+      price: nestPrice(product.price, product.priceString, product.currency),
+      period: nestPeriod(product.period, product.periodUnit, product.periodCount),
+      trial: trial,
+      intro: introOut,
+      offers: Array.isArray(product.offers) ? product.offers : []
+    }
+  }
+
+  function buildPlans (envelope) {
+    var products = envelope && envelope.products || []
+    var plans = []
+    for (var i = 0; i < products.length; i++) plans.push(toPlan(products[i]))
+    var counts = {}
+    var j
+    for (j = 0; j < plans.length; j++) {
+      if (!plans[j].id) plans[j].id = stripRc(plans[j].rcId) || plans[j].product
+      counts[plans[j].id] = (counts[plans[j].id] || 0) + 1
+    }
+    for (j = 0; j < plans.length; j++) {
+      if (counts[plans[j].id] > 1) plans[j].id = stripRc(plans[j].rcId) || plans[j].product
+    }
+    var seen = {}
+    for (j = 0; j < plans.length; j++) {
+      if (seen[plans[j].id]) plans[j].id = plans[j].product
+      seen[plans[j].id] = true
+    }
+    return plans
+  }
+
+  function stripRc (rcId) {
+    if (!rcId) return null
+    return rcId.indexOf('$rc_') === 0 ? rcId.slice(4) : rcId
+  }
+
+  function findPlan (plans, x) {
+    if (!plans) return null
+    for (var i = 0; i < plans.length; i++) {
+      var pl = plans[i]
+      if (pl.id === x || pl.rcId === x || pl.product === x || pl.kind === x) return pl
+    }
+    return null
+  }
+
   // ── the API ──────────────────────────────────────────────────────────────
 
   var iap = {
@@ -294,8 +384,11 @@
     debug: false,
 
     // The RevenueCat app user id used for every purchase, paywall, and
-    // entitlement call. Set it once with login().
-    user: null,
+    // entitlement call. Set it once with user(id).
+    _user: null,
+
+    // The current app user id (null when anonymous).
+    get id () { return this._user },
 
     // The RevenueCat project id, auto-filled from the native envelope when the
     // Global project ID is configured in Despia > Your App > Integrations.
@@ -314,20 +407,61 @@
     ready: function () {
       var self = this
       return Promise.resolve().then(function () {
-        return { native: self.native, os: os(), runtime: runtime(), user: self.user, project: self.project }
+        return { native: self.native, os: os(), runtime: runtime(), user: self._user, project: self.project }
       })
     },
 
-    // Identify the current user to RevenueCat. Use your Base44 user's id (or
-    // email) so client purchases and your server-side checks always agree.
-    login: function (id) {
-      this.user = id == null || id === '' ? null : String(id)
-      return Promise.resolve({ user: this.user })
+    // Identify the current user to RevenueCat — the everyday call:
+    //   await revenuecat.user(base44User.id)
+    // Use your Base44 user's stable id (not an email) so client purchases and
+    // your server-side checks always name the same RevenueCat customer.
+    // Switching accounts is just another user(newId) — no logout in between
+    // (RevenueCat supports logIn() straight from another identified user).
+    // With no argument, resolves the current identity.
+    user: function (id) {
+      var self = this
+      if (arguments.length === 0 || id === undefined) {
+        return Promise.resolve({ user: self._user, anonymous: !self._user })
+      }
+      self._user = id == null || id === '' ? null : String(id)
+      if (self._user && runtime() === 4) {
+        // Forward-compatible session bind: newer builds carry a native login
+        // action that merges anonymous history immediately and reports whether
+        // RevenueCat created the customer. Older builds reject/timeout and we
+        // stay in per-call identity mode (still correctly attributed).
+        return v4call('login', { external_id: self._user }, 4000)
+          .then(function (data) {
+            return {
+              user: self._user,
+              anonymous: false,
+              new: !!(data && (data.new || data.created)),
+              entitlements: data && data.entitlements || undefined
+            }
+          })
+          .catch(function () { return { user: self._user, anonymous: false } })
+      }
+      return Promise.resolve({ user: self._user, anonymous: !self._user })
     },
 
+    // Alias of user(id).
+    login: function (id) {
+      return this.user(id)
+    },
+
+    // Clear the current identity. On newer builds this also rotates the
+    // native RevenueCat user to a fresh anonymous id; on older builds the
+    // package stops sending the id (see SPEC.md §3) — apps with accounts
+    // should gate on their own auth state too:
+    //   const premium = user && await revenuecat.has('premium')
     logout: function () {
-      this.user = null
-      return Promise.resolve({ user: null })
+      this._user = null
+      this._catalog = null
+      if (runtime() === 4) {
+        return v4call('logout', {}, 4000)
+          .then(function (data) { return { user: null, anonymous: true, native: true } })
+          .catch(function () { return { user: null, anonymous: true, native: false } })
+      }
+      return Promise.resolve({ user: null, anonymous: true, native: false })
     },
 
     // All products across your RevenueCat offerings, with live store pricing
@@ -340,6 +474,15 @@
       })
     },
 
+    // Remember the last good catalog so buy('monthly') can resolve plan ids
+    // without another native roundtrip.
+    _cache: function (envelope) {
+      if (envelope && (envelope.ok !== false || (envelope.products && envelope.products.length))) {
+        this._catalog = { envelope: envelope, plans: buildPlans(envelope) }
+      }
+      return envelope
+    },
+
     // The full catalog envelope: { ok, current, offerings: [{ id, current,
     // packages: [{ id, type, product }] }], products: [...] } plus platform,
     // runtime, user, and project metadata.
@@ -347,26 +490,27 @@
       var self = this
       var rt = runtime()
       if (rt === 0) {
-        return Promise.resolve({ ok: false, current: null, offerings: [], products: [], platform: 'web', runtime: 0, user: self.user, project: self.project, error: 'Not running inside a Despia app.', code: 'web' })
+        return Promise.resolve({ ok: false, current: null, offerings: [], products: [], platform: 'web', runtime: 0, user: self._user, project: self.project, error: 'Not running inside a Despia app.', code: 'web' })
       }
       if (rt === 4) {
-        return v4call('catalog', { external_id: self.user, offering: offering }, 8000)
+        return v4call('catalog', { external_id: self._user, offering: offering }, 8000)
           .then(keepProject)
           .catch(function (err) {
             // Older V4 build without `catalog` — fall back to the products action.
             warn('catalog unavailable (' + (err && err.code) + '), falling back to products()')
             return v4call('products', {}, 8000).then(function (rows) {
               var products = (Array.isArray(rows) ? rows : []).map(mapV4Product)
-              return { ok: true, current: null, offerings: [], products: products, platform: os(), runtime: 4, user: self.user, project: self.project, error: null, code: null }
+              return { ok: true, current: null, offerings: [], products: products, platform: os(), runtime: 4, user: self._user, project: self.project, error: null, code: null }
             }).catch(function (e2) {
-              return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 4, user: self.user, project: self.project, error: e2 && e2.message || 'catalog failed', code: e2 && e2.code || 'error' }
+              return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 4, user: self._user, project: self.project, error: e2 && e2.message || 'catalog failed', code: e2 && e2.code || 'error' }
             })
           })
+          .then(function (envelope) { return self._cache(envelope) })
       }
       return chained('products', function () {
         var cmd = 'revenuecat://products'
         var q = []
-        if (self.user) q.push('external_id=' + encodeURIComponent(self.user))
+        if (self._user) q.push('external_id=' + encodeURIComponent(self._user))
         if (offering) q.push('offering=' + encodeURIComponent(offering))
         if (q.length) cmd += '?' + q.join('&')
         fire(cmd)
@@ -374,42 +518,87 @@
       }).then(function (envelope) {
         if (!envelope) {
           warn('products query timed out — rebuild your app in Despia to get the latest RevenueCat bridge')
-          return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 3, user: self.user, project: self.project, error: 'No response from the native layer.', code: 'timeout' }
+          return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 3, user: self._user, project: self.project, error: 'No response from the native layer.', code: 'timeout' }
         }
         return keepProject(envelope)
+      }).then(function (envelope) { return self._cache(envelope) })
+    },
+
+    // Your subscription plans, shaped for rendering a paywall screen:
+    //   [{ id: 'monthly', title, price: { value, text, currency },
+    //      period: { iso, value, unit }, trial: { days, eligible },
+    //      intro, offers, product, rcId, kind, type }]
+    // price.text is ALWAYS the value to display — localized by the store.
+    // plan.id (or the whole plan / its product id) feeds straight into buy().
+    plans: function (offering) {
+      var self = this
+      return this.offers(offering).then(function (envelope) {
+        if (self._catalog && self._catalog.envelope === envelope) return self._catalog.plans
+        return buildPlans(envelope)
       })
     },
 
-    // Native purchase for one product id from products(). Resolves when the
+    _catalog: null,
+
+    // Resolve a buy() argument — plan id ('monthly'), kind, '$rc_' package id,
+    // or store product id — to the underlying store product id.
+    _resolve: function (x) {
+      var self = this
+      var s = String(x && x.product || x)     // accept a whole plan object too
+      var hit = findPlan(self._catalog && self._catalog.plans, s)
+      if (hit) return Promise.resolve(hit.product)
+      // Reverse-DNS or base-plan-qualified ids are store product ids already —
+      // don't spend a catalog roundtrip on them.
+      if (s.indexOf(':') !== -1 || s.indexOf('.') !== -1) return Promise.resolve(s)
+      if (self._catalog) return Promise.resolve(s)
+      return self.plans().then(function (plans) {
+        var found = findPlan(plans, s)
+        return found ? found.product : s
+      }).catch(function () { return s })
+    },
+
+    // Native purchase. Accepts a plan id from plans() ('monthly'), a store
+    // product id from products(), or a whole plan object. Resolves when the
     // store sheet settles: { ok, cancelled, product, transaction,
-    // entitlements, error, code }. Never rejects.
-    buy: function (product) {
+    // entitlements, error, code }. Never rejects. Free trials and intro
+    // offers apply automatically when the store deems the user eligible.
+    // options.offer names a specific promotional / Google offer id — it is
+    // forwarded to the native layer (honored on builds that support explicit
+    // offers; ignored, falling back to default offer logic, on older builds).
+    buy: function (product, options) {
       var self = this
       var rt = runtime()
-      if (!product) return Promise.resolve(rejection({ code: 'missing_param', message: 'buy(product) needs a product id.' }, 'purchase'))
+      var offer = options && options.offer ? String(options.offer) : null
+      if (!product) return Promise.resolve(rejection({ code: 'missing_param', message: 'buy(product) needs a product or plan id.' }, 'purchase'))
       if (rt === 0) return Promise.resolve(webResult('purchase'))
-      if (rt === 4) {
-        return v4call('purchase', { external_id: self.user || self._anon(), product: String(product) }, 600000)
-          .then(function (data) {
-            return {
-              ok: true, cancelled: false, restored: false, source: 'purchase',
-              product: data && data.product_id || String(product),
-              transaction: data && data.transaction && data.transaction.id || null,
-              entitlements: data && data.active_entitlements || [],
-              user: self.user, platform: os(), runtime: 4, error: null, code: null
-            }
+      return this._resolve(product).then(function (productId) {
+        if (rt === 4) {
+          var args = { external_id: self._user || self._anon(), product: productId }
+          if (offer) args.offer = offer
+          return v4call('purchase', args, 600000)
+            .then(function (data) {
+              return {
+                ok: true, cancelled: false, restored: false, source: 'purchase',
+                product: data && data.product_id || productId,
+                transaction: data && data.transaction && data.transaction.id || null,
+                entitlements: data && data.active_entitlements || [],
+                user: self._user, platform: os(), runtime: 4, error: null, code: null
+              }
+            })
+            .catch(function (err) { return rejection(err, 'purchase') })
+        }
+        return chained('result', function () {
+          var cmd = 'revenuecat://purchase?external_id=' + encodeURIComponent(self._user || self._anon()) +
+               '&product=' + encodeURIComponent(productId)
+          if (offer) cmd += '&offer=' + encodeURIComponent(offer)
+          fire(cmd)
+          return awaitChannel('revenueCatResult', 'onRevenueCatResult', 600000, function (r) {
+            return r && r.source === 'purchase'
           })
-          .catch(function (err) { return rejection(err, 'purchase') })
-      }
-      return chained('result', function () {
-        fire('revenuecat://purchase?external_id=' + encodeURIComponent(self.user || self._anon()) +
-             '&product=' + encodeURIComponent(String(product)))
-        return awaitChannel('revenueCatResult', 'onRevenueCatResult', 600000, function (r) {
-          return r && r.source === 'purchase'
+        }).then(function (result) {
+          if (!result) return rejection({ code: 'timeout', message: 'No purchase result from the native layer.' }, 'purchase')
+          return result
         })
-      }).then(function (result) {
-        if (!result) return rejection({ code: 'timeout', message: 'No purchase result from the native layer.' }, 'purchase')
-        return result
       })
     },
 
@@ -440,10 +629,10 @@
             // The V4 action settles at presentation; only a rejection (paywall
             // never shown) ends the wait early — the outcome rides the shared
             // result channel exactly like V3.
-            v4call('paywall', { external_id: self.user || self._anon(), offering: offering }, 20000)
+            v4call('paywall', { external_id: self._user || self._anon(), offering: offering }, 20000)
               .catch(function (err) { settle(rejection(err, 'paywall')) })
           } else {
-            var cmd = 'revenuecat://launchPaywall?external_id=' + encodeURIComponent(self.user || self._anon())
+            var cmd = 'revenuecat://launchPaywall?external_id=' + encodeURIComponent(self._user || self._anon())
             if (offering) cmd += '&offering=' + encodeURIComponent(offering)
             fire(cmd)
           }
@@ -471,9 +660,9 @@
           resolve({ ok: true, source: 'center', platform: os(), runtime: rt, error: null, code: 'timeout' })
         }, 1800000)
         if (rt === 4) {
-          v4call('center', { external_id: self.user }, 20000).catch(function () {})
+          v4call('center', { external_id: self._user }, 20000).catch(function () {})
         } else {
-          fire(self.user ? 'revenuecat://center?external_id=' + encodeURIComponent(self.user) : 'revenuecat://center')
+          fire(self._user ? 'revenuecat://center?external_id=' + encodeURIComponent(self._user) : 'revenuecat://center')
         }
       })
     },
@@ -486,7 +675,7 @@
       if (rt === 0) return Promise.resolve(emptyStatus('web', 'Not running inside a Despia app.'))
       if (rt === 4) {
         return Promise.all([
-          v4call('customer', { external_id: self.user }, 8000).catch(function () { return null }),
+          v4call('customer', { external_id: self._user }, 8000).catch(function () { return null }),
           v4call('history', {}, 8000).catch(function () { return null })
         ]).then(function (parts) {
           var envelope = parts[0]
@@ -497,7 +686,7 @@
         })
       }
       return chained('customer', function () {
-        fire(self.user ? 'revenuecat://customer?external_id=' + encodeURIComponent(self.user) : 'revenuecat://customer')
+        fire(self._user ? 'revenuecat://customer?external_id=' + encodeURIComponent(self._user) : 'revenuecat://customer')
         return awaitChannel('revenueCatCustomer', 'onRevenueCatCustomer', 8000)
       }).then(function (envelope) {
         if (envelope) {
@@ -535,6 +724,80 @@
     has: function (entitlement) {
       return this.status().then(function (s) {
         return !!(s && s.active && s.active.indexOf(String(entitlement)) !== -1)
+      })
+    },
+
+    // Normalized full customer state — status() plus a per-entitlement map:
+    //   { user, active: ['premium'], entitlements: { premium: { active,
+    //     product, period, bought, expires, renews } }, manage }
+    // period is 'trial' | 'intro' | 'promo' | 'normal' when the runtime
+    // reports it, else null.
+    info: function () {
+      var self = this
+      return this.status().then(function (s) {
+        var map = {}
+        var rows = s.purchases || []
+        var ids = s.all && s.all.length ? s.all : s.active || []
+        for (var i = 0; i < ids.length; i++) {
+          var id = ids[i]
+          var row = null
+          for (var j = 0; j < rows.length; j++) {
+            if (rows[j] && rows[j].entitlementId === id) { row = rows[j]; break }
+          }
+          var period = null
+          if (row && row.entitlement && row.entitlement.period_type) {
+            var pt = String(row.entitlement.period_type)
+            period = pt === 'normal' ? 'normal' : pt === 'trial' ? 'trial' : pt === 'intro' ? 'intro' : pt === 'promotional' ? 'promo' : pt
+          }
+          map[id] = {
+            active: !!(s.active && s.active.indexOf(id) !== -1),
+            product: row ? row.productId : null,
+            period: period,
+            bought: row ? row.purchaseDate || null : null,
+            expires: row ? row.expirationDate || null : null,
+            renews: row ? !!row.willRenew : false
+          }
+        }
+        return {
+          ok: s.ok,
+          user: s.user || self._user,
+          anonymous: s.anonymous,
+          active: s.active || [],
+          entitlements: map,
+          subscriptions: s.subscriptions || [],
+          manage: s.management || null,
+          platform: s.platform,
+          runtime: s.runtime,
+          error: s.error,
+          code: s.code
+        }
+      })
+    },
+
+    // Apple subscription offer-code redemption (iOS). Opens the native
+    // redemption sheet on builds that carry the redeem bridge; resolves
+    // { supported: false } everywhere else (Google Play has no in-app
+    // equivalent — Play codes are redeemed in the Play Store app).
+    redeem: function () {
+      var self = this
+      var rt = runtime()
+      var unsupported = { ok: false, supported: false, source: 'redeem', platform: os(), runtime: rt, error: null, code: 'unsupported' }
+      if (rt === 0 || os() === 'android') return Promise.resolve(unsupported)
+      if (rt === 4) {
+        return v4call('redeem', {}, 8000)
+          .then(function () { return { ok: true, supported: true, source: 'redeem', platform: os(), runtime: 4, error: null, code: null } })
+          .catch(function () { return unsupported })
+      }
+      return chained('result', function () {
+        fire('revenuecat://redeem')
+        // Newer builds ack presentation on the result channel; silence means
+        // the build predates the redeem bridge.
+        return awaitChannel('revenueCatResult', 'onRevenueCatResult', 8000, function (r) {
+          return r && r.source === 'redeem'
+        })
+      }).then(function (result) {
+        if (!result) return unsupported
+        return { ok: result.ok !== false, supported: true, source: 'redeem', platform: os(), runtime: 3, error: result.error || null, code: result.code || null }
       })
     },
 

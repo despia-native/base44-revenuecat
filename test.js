@@ -14,12 +14,27 @@ const PRODUCT = {
   intro: null, offering: 'default', package: '$rc_monthly', packageType: 'monthly'
 }
 
+const ANNUAL = {
+  id: 'premium:annual', sku: 'premium', plan: 'annual', type: 'subscription',
+  title: 'Premium Annual', desc: 'Everything, yearly', price: 79.99, priceString: '$79.99',
+  currency: 'USD', period: 'P1Y', periodUnit: 'year', periodCount: 1,
+  intro: { price: 0, priceString: '$0.00', period: 'P1W', periodUnit: 'week', periodCount: 1, cycles: 1, type: 'trial' },
+  offering: 'default', package: '$rc_annual', packageType: 'annual'
+}
+
 function envelope (runtime) {
   return {
     ok: true, provider: 'revenuecat', platform: 'ios', runtime, project: 'proj123',
     user: 'u1', anonymous: false, current: 'default',
-    offerings: [{ id: 'default', current: true, packages: [{ id: '$rc_monthly', type: 'monthly', product: PRODUCT }] }],
-    products: [PRODUCT], error: null, code: null
+    offerings: [{
+      id: 'default',
+      current: true,
+      packages: [
+        { id: '$rc_monthly', type: 'monthly', product: PRODUCT },
+        { id: '$rc_annual', type: 'annual', product: ANNUAL }
+      ]
+    }],
+    products: [PRODUCT, ANNUAL], error: null, code: null
   }
 }
 
@@ -93,14 +108,31 @@ async function testV3 () {
   const iap = freshRequire()
   assert.strictEqual(iap.runtime, 3)
   assert.strictEqual(iap.os, 'ios')
-  await iap.login('u1')
+  await iap.user('u1')
+  assert.strictEqual(iap.id, 'u1')
 
   const products = await iap.products()
-  assert.strictEqual(products.length, 1)
+  assert.strictEqual(products.length, 2)
   assert.strictEqual(products[0].priceString, '$9.99')
   assert.strictEqual(iap.project, 'proj123', 'project id auto-filled from envelope')
 
-  const buy = await iap.buy(products[0].id)
+  // plans(): the nested paywall-screen view over the same envelope
+  const plans = await iap.plans()
+  assert.strictEqual(plans.length, 2)
+  const monthly = plans.find((p) => p.id === 'monthly')
+  const annual = plans.find((p) => p.id === 'annual')
+  assert.ok(monthly && annual, 'plan ids derived from package types')
+  assert.strictEqual(monthly.price.text, '$9.99')
+  assert.strictEqual(monthly.price.currency, 'USD')
+  assert.deepStrictEqual(monthly.period, { iso: 'P1M', value: 1, unit: 'month' })
+  assert.strictEqual(monthly.trial, null)
+  assert.deepStrictEqual(annual.trial, { days: 7, eligible: null }, 'P1W trial reads as 7 days')
+  assert.strictEqual(annual.product, 'premium:annual')
+  assert.strictEqual(annual.kind, 'annual')
+
+  // buy() accepts the plan id and resolves it to the store product id —
+  // the scheme interceptor above asserts product=premium%3Amonthly.
+  const buy = await iap.buy('monthly')
   assert.strictEqual(buy.ok, true)
   assert.deepStrictEqual(buy.entitlements, ['premium'])
 
@@ -144,7 +176,72 @@ async function testV3OldBuild () {
   const status = await iap.status()  // customer times out after 8s → history fallback
   assert.deepStrictEqual(status.active, ['premium'])
   assert.strictEqual(await iap.has('premium'), true)
+  const info = await iap.info()
+  assert.strictEqual(info.entitlements.premium.active, true)
+  assert.strictEqual(info.entitlements.premium.product, 'p1')
   console.log('  v3 old build: entitlements fall back to store history ✓')
+}
+
+async function testRedeemStub () {
+  // Android never supports the redemption sheet; iOS on an old build resolves
+  // {supported:false} after the silent probe.
+  const win = { navigator: { userAgent: 'despia-android' }, localStorage: null }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const red = await iap.redeem()
+  assert.strictEqual(red.supported, false)
+  console.log('  redeem: unsupported resolves cleanly, never crashes ✓')
+}
+
+async function testServer () {
+  const calls = []
+  global.fetch = async (url, init) => {
+    calls.push({ url, auth: init.headers.Authorization })
+    if (url.includes('/v1/subscribers/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          subscriber: {
+            entitlements: {
+              premium: { expires_date: null, product_identifier: 'premium:monthly' },
+              old: { expires_date: '2020-01-01T00:00:00Z' }
+            }
+          }
+        })
+      }
+    }
+    if (url.includes('/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl123', expires_at: null }] }) }
+    }
+    if (url.includes('/entitlements?')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entl123', lookup_key: 'premium' }] }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+
+  // Zero-secret: public SDK key rides the v1 subscribers endpoint.
+  assert.strictEqual(await server.entitled('u1', 'premium', { key: 'appl_pub' }), true)
+  assert.strictEqual(await server.entitled('u1', 'old', { key: 'appl_pub' }), false, 'expired entitlement is inactive')
+  assert.ok(calls[0].url.includes('/v1/subscribers/u1'))
+  assert.strictEqual(calls[0].auth, 'Bearer appl_pub')
+
+  // Secret + project: v2 path with the entl->lookup_key join.
+  calls.length = 0
+  const ents = await server.entitlements('u1', { secret: 'sk_test', project: 'proj123' })
+  assert.deepStrictEqual(ents, [{ id: 'premium', expires: null }])
+  assert.ok(calls[0].url.includes('/v2/projects/proj123/customers/u1/active_entitlements'))
+
+  // Public key + project must NOT attempt v2 (public keys are v1-only).
+  calls.length = 0
+  await server.entitled('u1', 'premium', { key: 'appl_pub', project: 'proj123' })
+  assert.ok(calls.every((c) => c.url.includes('/v1/')), 'public key stays on v1')
+
+  console.log('  server: public-key v1 path + secret v2 lookup-key join ✓')
 }
 
 async function testV4 () {
@@ -254,6 +351,8 @@ async function testV4OldBuild () {
   await testV3OldBuild()
   await testV4()
   await testV4OldBuild()
+  await testRedeemStub()
+  await testServer()
   console.log('all tests passed')
   process.exit(0)
 })().catch((e) => {

@@ -2,9 +2,16 @@
 // subscriber verification for Base44 backend functions (Deno) and Node.
 
 export interface ServerOptions {
-  /** RevenueCat SECRET API key (sk_...). Falls back to env RC_SECRET / REVENUECAT_SECRET_KEY. */
+  /**
+   * Zero-secret auth: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+   * RevenueCat's v1 subscriber endpoint accepts public keys for reads.
+   * Configure it server-side (constant or env RC_KEY) — never read it from
+   * the request. Falls back to env RC_KEY / REVENUECAT_PUBLIC_KEY.
+   */
+  key?: string
+  /** RevenueCat SECRET API key (sk_...) — unlocks the v2 API path. Falls back to env RC_SECRET / REVENUECAT_SECRET_KEY. */
   secret?: string
-  /** RevenueCat project id (proj...). Falls back to env RC_PROJECT / REVENUECAT_PROJECT_ID. Enables the v2 API path. */
+  /** RevenueCat project id (proj...). Falls back to env RC_PROJECT / REVENUECAT_PROJECT_ID. Used with secret keys on the v2 path. */
   project?: string
 }
 
