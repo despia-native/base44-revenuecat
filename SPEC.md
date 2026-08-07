@@ -1,7 +1,6 @@
 # Base44 RevenueCat SDK — Product Specification v2
 
-Status key: **LIVE** = shipped on branch `claude/base44-revenucat-npm-e8y9k8` across
-`base44-revenuecat`, `d-ios`, `d-android`, `despia-framework`. **P2/P3** = phased native work below.
+Status key: **LIVE** = shipped across `base44-revenuecat` 1.1.0, `d-ios`, `d-android`, and `despia-framework`. **P2/P3** = phased native work below.
 
 The product principle stands: if a Base44 user has to learn RevenueCat's native SDK, StoreKit
 vs Play Billing, native callbacks, or a subscription mirror table — we failed. Everything

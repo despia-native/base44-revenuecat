@@ -425,20 +425,12 @@
       }
       self._user = id == null || id === '' ? null : String(id)
       if (self._user && runtime() === 4) {
-        // Forward-compatible session bind: newer builds carry a native login
-        // action that merges anonymous history immediately and reports whether
-        // RevenueCat created the customer. Older builds reject/timeout and we
-        // stay in per-call identity mode (still correctly attributed).
-        return v4call('login', { external_id: self._user }, 4000)
-          .then(function (data) {
-            return {
-              user: self._user,
-              anonymous: false,
-              new: !!(data && (data.new || data.created)),
-              entitlements: data && data.entitlements || undefined
-            }
-          })
-          .catch(function () { return { user: self._user, anonymous: false } })
+        // Forward-compatible session bind, fire-and-forget: newer builds carry
+        // a native login action that merges anonymous history immediately;
+        // older builds reject/timeout silently and we stay in per-call
+        // identity mode (still correctly attributed). Never block app boot on
+        // the probe.
+        v4call('login', { external_id: self._user }, 8000).catch(function () {})
       }
       return Promise.resolve({ user: self._user, anonymous: !self._user })
     },
@@ -457,11 +449,12 @@
       this._user = null
       this._catalog = null
       if (runtime() === 4) {
-        return v4call('logout', {}, 4000)
-          .then(function (data) { return { user: null, anonymous: true, native: true } })
-          .catch(function () { return { user: null, anonymous: true, native: false } })
+        // Fire-and-forget: newer builds rotate the native RevenueCat user to
+        // a fresh anonymous id; older builds ignore it. The local clear above
+        // is what stops this package from sending the old id either way.
+        v4call('logout', {}, 8000).catch(function () {})
       }
-      return Promise.resolve({ user: null, anonymous: true, native: false })
+      return Promise.resolve({ user: null, anonymous: true })
     },
 
     // All products across your RevenueCat offerings, with live store pricing

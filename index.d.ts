@@ -238,12 +238,12 @@ export interface RevenueCat {
    * Switching accounts is just another user(newId). No argument resolves the
    * current identity.
    */
-  user(id: string): Promise<{ user: string | null, anonymous: boolean, new?: boolean, entitlements?: unknown }>
+  user(id: string): Promise<{ user: string | null, anonymous: boolean }>
   user(): Promise<{ user: string | null, anonymous: boolean }>
   /** Alias of user(id). */
   login(id: string): Promise<{ user: string | null, anonymous: boolean }>
-  /** Clear identity (rotates to a fresh anonymous RevenueCat user on newer builds). */
-  logout(): Promise<{ user: null, anonymous: true, native: boolean }>
+  /** Clear identity (also rotates to a fresh anonymous RevenueCat user on newer builds, fire-and-forget). */
+  logout(): Promise<{ user: null, anonymous: true }>
 
   /** Subscription plans shaped for a paywall screen, with live store pricing. */
   plans(offering?: string): Promise<Plan[]>
