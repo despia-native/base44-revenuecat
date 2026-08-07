@@ -1,0 +1,73 @@
+{
+  "name": "base44-revenuecat",
+  "version": "1.0.0",
+  "description": "In-app purchases and subscriptions for Base44 apps published as native iOS and Android apps with Despia. Query products with real StoreKit and Google Play Billing prices, launch RevenueCat native paywalls, check entitlements, and verify subscribers server-side in Base44 backend functions — promise-based, no native code, no webhooks.",
+  "keywords": [
+    "base44",
+    "base44 in-app purchases",
+    "base44 subscriptions",
+    "base44 ios app",
+    "base44 android app",
+    "base44 app store",
+    "base44 google play",
+    "base44 mobile app",
+    "base44 paywall",
+    "base44 revenuecat",
+    "revenuecat",
+    "in-app purchases",
+    "in-app subscriptions",
+    "iap",
+    "paywall",
+    "storekit",
+    "google play billing",
+    "app store",
+    "google play",
+    "despia",
+    "no-code",
+    "low-code",
+    "convert web app to mobile app",
+    "entitlements",
+    "subscription app",
+    "monetize app"
+  ],
+  "license": "Apache-2.0",
+  "author": "Despia <developers@despia.com> (https://despia.com)",
+  "homepage": "https://despia.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/despia-native/base44-revenuecat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/despia-native/base44-revenuecat/issues"
+  },
+  "main": "index.js",
+  "module": "index.js",
+  "types": "index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "require": "./index.js",
+      "default": "./index.js"
+    },
+    "./server": {
+      "types": "./server.d.ts",
+      "import": "./server.mjs",
+      "require": "./server.cjs",
+      "default": "./server.mjs"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "server.cjs",
+    "server.mjs",
+    "server.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  }
+}
