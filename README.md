@@ -211,7 +211,7 @@ The UI follows the store — never a tier flag you set yourself.
 Client checks decide what to *show*. Anything a tampered client could steal — paid exports, credits, premium endpoints — gets verified **when the request arrives**, by asking RevenueCat directly. No webhook handlers, no subscription table to keep in sync.
 
 1. In RevenueCat: **Project settings → API keys → + New secret key** (`sk_…`).
-2. In Base44: add a secret named `RC_SECRET` with that key (Settings → Secrets, or `secrets set` from the CLI). Optionally add `RC_PROJECT` with your `proj…` id.
+2. In Base44: add a secret named `RC_SECRET` with that key (your app's secrets manager, or `secrets set` from the Base44 CLI). Optionally add `RC_PROJECT` with your `proj…` id.
 3. Create a backend function:
 
 ```javascript
