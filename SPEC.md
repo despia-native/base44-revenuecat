@@ -195,7 +195,7 @@ Client checks gate UI; server checks gate value. Three rungs, lowest friction fi
    `{app, user, active, iat, exp}` and `base44-revenuecat/server` verifies the signature +
    expiry + that `proof.user === base44.auth.me().id`. Zero RevenueCat traffic from Base44
    functions and zero config, but it stands up signing infra, key distribution, and an
-   availability dependency. Build it for scale/offline-tolerance *after* rungs 1–2 prove the
+   availability dependency. Build it for scale/offline-tolerance *after* rungs 1 and 2 prove the
    DX, not before. (The dev draft made this the centerpiece; rung 1 removes its urgency.)
 
 Never at any rung: webhooks, subscription mirror tables, receipt parsing. RevenueCat is the
@@ -215,7 +215,7 @@ LIVE today, one JSON on all runtimes (`runtime: 3|4` distinguishes):
 
 P2 additions (all three runtimes, additive only, `contract_diff` compatible):
 `login` / `logout` (§3), `redeem` (§5.6), `offer` param on purchase (§5.4), `offers[]` +
-`intro.mode` + `eligible` in the catalog envelope (§5.1–3), per-entitlement detail
+`intro.mode` + `eligible` in the catalog envelope (§5.1 to 5.3), per-entitlement detail
 (`period: normal|trial|intro|promo`, product, expiry) in the customer envelope, V4's
 entitlement mapper already carries `period_type`; V3 lifts the same fields from
 CustomerInfo. Existing envelope fields are never renamed or removed; consumers must
