@@ -1,6 +1,6 @@
 {
   "name": "base44-revenuecat",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "In-app purchases and subscriptions for Base44 apps published as native iOS and Android apps with Despia. Query products with real StoreKit and Google Play Billing prices, launch RevenueCat native paywalls, check entitlements, and verify subscribers server-side in Base44 backend functions, promise-based, no native code, no webhooks.",
   "keywords": [
     "base44",

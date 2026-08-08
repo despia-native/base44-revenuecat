@@ -46,15 +46,28 @@ on either model.
 Capability detection per call, never exposed to the app:
 
 ```
-window.__dsxWire + window.dsx.module  → V4: dsx.module.revenuecat.* promises
-'despia' user agent                   → V3: revenuecat:// schemes + window channels
-neither                               → browser: safe no-op resolutions
+window.dsx.module  OR  window.__dsxWire   → V4: dsx.module.revenuecat.* promises
+'despia' user agent, neither of the above → V3: revenuecat:// schemes + window channels
+neither                                   → browser: safe no-op resolutions
 ```
 
+EITHER V4 signal is sufficient (LIVE, 1.4.0). The bus and the wire flag are set by the same
+runtime but not necessarily in the same tick; requiring both could misread a V4 app as V3 and
+fire scheme navigations at it, which is the one mistake with a native-alert hazard (below).
+
 Per-feature degradation is the law of this package: every native capability is probed with a
-timeout and falls back (V3 old build → history-based entitlements; V4 old build → `products`
-action mapping). A new package on an old binary must degrade, never hang or throw. New
-binaries with old packages keep working because wire formats are only ever extended.
+timeout and falls back to the next best read the build actually carries. The full ladders
+(LIVE, 1.4.0):
+
+| Call | V4 ladder | V3 ladder |
+|---|---|---|
+| `plans()` / `products()` / `offers()` | `catalog` → `offerings` → `products` | `revenuecat://products` → `revenuecat://offerings` (legacy channel, `window.offeringsData`) |
+| `status()` / `has()` | `customer` → `entitlements` → `history` | `revenuecat://customer` → `getpurchasehistory://` |
+| `paywall()` | `paywall` → `launchPaywall` | `revenuecat://launchPaywall` |
+| `user()` | `whoami` → local state | `revenuecat://whoami` (gated on `bridge >= 2`) → local state |
+
+A new package on an old binary must degrade, never hang or throw. New binaries with old
+packages keep working because wire formats are only ever extended.
 
 Two rules the classic runtime forces, because an unknown `revenuecat://` command there falls
 into a **license-gated catch-all that can raise a native alert**:
