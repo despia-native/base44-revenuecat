@@ -69,6 +69,7 @@
     "server.mjs",
     "server.d.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
