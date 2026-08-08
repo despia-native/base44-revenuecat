@@ -25,7 +25,7 @@ await revenuecat.paywall()                // or: the RevenueCat paywall you desi
 if (await revenuecat.has('premium')) unlockPremium()   // client-side entitlement gate
 ```
 
-> **`premium` is a placeholder for your own entitlement id, not a built-in.** RevenueCat ships no default entitlements, so nothing called `premium` exists until you create it yourself in the RevenueCat dashboard (Product catalog → Entitlements) and attach your App Store and Play Store products to it. Use **your** id everywhere this README writes `premium`. Until that entitlement exists and has products attached, `has('premium')` stays false for every user forever, including immediately after a real purchase that Apple or Google actually charged for.
+> **`premium` is a placeholder for your own entitlement id, not a built-in.** RevenueCat ships no default entitlements, so nothing called `premium` exists until you create it yourself in the RevenueCat dashboard (Product catalog → Entitlements) and attach your App Store and Play Store products to it. Use **your** id everywhere this README writes `premium`. Until that entitlement exists and has products attached, `has('premium')` stays false for every user forever, including immediately after a real purchase that Apple or Google actually charged for. New to this? Read **[the entitlements guide](ENTITLEMENTS.md)** first: what they are, how to create one, how to attach subscriptions and one-time purchases, and why credit packs work differently.
 
 Every call returns a promise and **never throws**. In the Base44 browser preview each method resolves a safe empty result, so you can build and preview your paywall logic on the web and it simply comes alive inside the installed app.
 
@@ -49,7 +49,7 @@ You do **not** need webhooks, a subscriptions table, or native code. The two que
 1. Create a free account at [app.revenuecat.com](https://app.revenuecat.com) (free until well past your first revenue).
 2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key.
 3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON.
-4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true.
+4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching products, tiers, lifetime unlocks and consumables are all covered in [the entitlements guide](ENTITLEMENTS.md).
 5. **Product catalog → Offerings**: group products into an offering (the `default` offering is what paywalls show), e.g. a monthly and an annual package.
 6. Optional but recommended: design your paywall in **Paywalls**. `revenuecat.paywall()` presents it natively, priced in each user's own currency, and you can restyle it from the dashboard without an app update.
 7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL).
@@ -449,6 +449,8 @@ No. Client gating works with zero backend. For protected server actions, a singl
 A product is what the store sells (`premium_monthly`, `premium_annual`). An entitlement is what it unlocks (`premium`). Attach both your iOS and Android products to one entitlement, then gate your app on `has('premium')` and your code never branches per platform or per plan.
 
 You name the entitlement yourself when you create it in RevenueCat, and both names above are just examples. There is no standard or built-in entitlement id, so `premium` carries no special meaning to RevenueCat, to Despia, or to this package. Whatever you type in the dashboard is the exact string your code must pass.
+
+[The entitlements guide](ENTITLEMENTS.md) covers this end to end: creating one, attaching subscriptions and lifetime unlocks, why consumable credits are not entitlements, stacked tiers, and reading the lifecycle correctly.
 
 ### How do I test purchases before launch?
 
