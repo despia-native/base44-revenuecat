@@ -167,18 +167,47 @@
     try { return W.dsx.module.revenuecat } catch (e) { return null }
   }
 
+  // The Framework installs window.__dsxWire at document start and locks it
+  // (non-writable, non-configurable), then binds the window.dsx facade a
+  // moment later. So the wire can be present while the module bus is not
+  // bound yet. When the wire says Framework, wait for the bus rather than
+  // failing the call on the first miss: giving up there would resolve an
+  // empty paywall on a perfectly capable app.
+  var BUS_WAIT_MS = 2000
+
+  function v4bus () {
+    var mod = v4()
+    if (mod) return Promise.resolve(mod)
+    var wired = false
+    try { wired = !!(W && W.__dsxWire) } catch (e) {}
+    if (!wired) return Promise.resolve(null)
+    return new Promise(function (resolve) {
+      var waited = 0
+      var step = 50
+      var timer = setInterval(function () {
+        waited += step
+        var ready = v4()
+        if (ready || waited >= BUS_WAIT_MS) {
+          clearInterval(timer)
+          resolve(ready)
+        }
+      }, step)
+    })
+  }
+
   function v4call (action, args, timeoutMs) {
-    return new Promise(function (resolve, reject) {
-      var mod = v4()
-      if (!mod) return reject({ code: 'no_module' })
-      var params = {}
-      for (var k in args) if (args[k] !== undefined && args[k] !== null && args[k] !== '') params[k] = args[k]
-      if (timeoutMs) params.__timeout = timeoutMs
-      try {
-        mod[action](params).then(resolve, reject)
-      } catch (e) {
-        reject({ code: 'call_failed', message: String(e && e.message || e) })
-      }
+    return v4bus().then(function (mod) {
+      return new Promise(function (resolve, reject) {
+        if (!mod) return reject({ code: 'no_module' })
+        var params = {}
+        for (var k in args) if (args[k] !== undefined && args[k] !== null && args[k] !== '') params[k] = args[k]
+        if (timeoutMs) params.__timeout = timeoutMs
+        try {
+          mod[action](params).then(resolve, reject)
+        } catch (e) {
+          reject({ code: 'call_failed', message: String(e && e.message || e) })
+        }
+      })
     })
   }
 

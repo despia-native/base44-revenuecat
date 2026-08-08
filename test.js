@@ -465,6 +465,48 @@ async function testV3LegacyOfferings () {
   console.log('  v3 legacy build: products falls back to the offerings channel ✓')
 }
 
+async function testBusArrivesLate () {
+  // The Framework locks window.__dsxWire at document start and binds the
+  // window.dsx bus a moment later. A call made in that gap must wait for the
+  // bus, not resolve an empty paywall on a perfectly capable app.
+  const win = {
+    navigator: { userAgent: 'despia-iphone' },
+    native_os: 'ios',
+    __dsxWire: { bound: false },
+    localStorage: null
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  assert.strictEqual(iap.runtime, 4, 'the wire alone identifies the Framework')
+
+  // The bus binds 300ms after the call is already in flight.
+  setTimeout(() => {
+    win.dsx = {
+      module: {
+        revenuecat: {
+          catalog: () => Promise.resolve(envelope(4))
+        }
+      }
+    }
+  }, 300)
+
+  const t0 = Date.now()
+  const products = await iap.products()
+  assert.strictEqual(products.length, 2, 'the call waited for the bus instead of failing')
+  assert.ok(Date.now() - t0 >= 250, 'it really did wait')
+
+  // A page that is not the Framework at all must not wait: no wire, no bus.
+  const bare = { navigator: { userAgent: 'Mozilla/5.0' }, localStorage: null }
+  global.window = bare
+  global.self = bare
+  const web = freshRequire()
+  const t1 = Date.now()
+  await web.products()
+  assert.ok(Date.now() - t1 < 500, 'a plain browser resolves immediately, no bus wait')
+  console.log('  late bus: a call made before window.dsx binds still works ✓')
+}
+
 async function testRuntimeDetection () {
   // The module bus alone is enough to mean Framework: the wire flag and the
   // bus are not guaranteed to appear in the same tick, and misreading a
@@ -811,6 +853,7 @@ async function testV4LegacyRetry () {
   await testV4LegacyRetry()
   await testV4LegacyActions()
   await testV3LegacyOfferings()
+  await testBusArrivesLate()
   await testRuntimeDetection()
   await testDestructured()
   await testRedeemStub()

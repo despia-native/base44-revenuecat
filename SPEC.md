@@ -51,9 +51,17 @@ window.dsx.module  OR  window.__dsxWire   → V4: dsx.module.revenuecat.* promis
 neither                                   → browser: safe no-op resolutions
 ```
 
-EITHER V4 signal is sufficient (LIVE, 1.4.0). The bus and the wire flag are set by the same
-runtime but not necessarily in the same tick; requiring both could misread a V4 app as V3 and
-fire scheme navigations at it, which is the one mistake with a native-alert hazard (below).
+EITHER V4 signal is sufficient (LIVE, 1.4.0). The two are not interchangeable, and the order
+matters: the runtime installs `window.__dsxWire` at document start and LOCKS it
+(`writable:false, configurable:false`), then binds the `window.dsx` facade from runtime.js a
+moment later. The wire is therefore the authoritative marker; `window.dsx` is page-overridable
+by design (the framework's own note calls an unguarded `dsx` probe "a lying probe"), so any
+page script could otherwise impersonate a native app. Requiring both would also misread a V4
+app as V3 and fire scheme navigations at it, the one mistake with a native-alert hazard (below).
+
+Because the wire lands first, a call can arrive while the bus is still unbound. The transport
+waits up to 2s for `dsx.module` in that case rather than failing `no_module` (LIVE, 1.4.1);
+a page with no wire at all never waits.
 
 Per-feature degradation is the law of this package: every native capability is probed with a
 timeout and falls back to the next best read the build actually carries. The full ladders
