@@ -336,6 +336,165 @@ async function testV3LegacyAnon () {
   console.log('  v3 legacy build: anonymous purchases keep the synthesized id ✓')
 }
 
+async function testV4LegacyActions () {
+  // A V4 build that predates catalog/customer/paywall: the package must fall
+  // back to the older actions the module has always carried (offerings,
+  // entitlements, launchPaywall) instead of giving up.
+  const called = []
+  const win = {
+    navigator: { userAgent: 'despia-iphone' },
+    native_os: 'ios',
+    __dsxWire: { bound: true },
+    localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } },
+    dsx: {
+      module: {
+        revenuecat: {
+          catalog: () => { called.push('catalog'); return Promise.reject({ code: 'no_module' }) },
+          customer: () => { called.push('customer'); return Promise.reject({ code: 'no_module' }) },
+          paywall: () => { called.push('paywall'); return Promise.reject({ code: 'no_module' }) },
+          offerings: () => {
+            called.push('offerings')
+            return Promise.resolve({
+              current: 'default',
+              all: [{
+                id: 'default',
+                description: 'Standard',
+                packages: [{
+                  id: '$rc_monthly',
+                  type: 'monthly',
+                  offering_id: 'default',
+                  product: {
+                    id: 'premium_monthly', type: 'subscription', title: 'Premium Monthly',
+                    description: 'Everything', store: 'app_store',
+                    price: { amount: 9.99, formatted: '$9.99', currency: 'USD' },
+                    subscription: { period: 'P1M', period_unit: 'month', period_count: 1 }
+                  }
+                }]
+              }]
+            })
+          },
+          entitlements: () => {
+            called.push('entitlements')
+            return Promise.resolve({
+              active: [{ id: 'premium', is_active: true, product_id: 'premium_monthly' }],
+              all: [{ id: 'premium' }, { id: 'legacy_pro' }]
+            })
+          },
+          history: () => Promise.resolve([]),
+          launchPaywall: (args) => {
+            called.push('launchPaywall')
+            setTimeout(() => {
+              win.revenueCatResult = {
+                ok: true, cancelled: false, restored: false, source: 'paywall',
+                product: 'premium_monthly', transaction: 'tL', entitlements: ['premium'],
+                user: null, platform: 'ios', runtime: 4, error: null, code: null
+              }
+              if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+            }, 30)
+            return Promise.resolve({ status: 'presented', offering: 'default' })
+          }
+        }
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  // catalog is gone, offerings answers, and package placement survives.
+  const plans = await iap.plans()
+  assert.ok(called.includes('catalog') && called.includes('offerings'), 'catalog fell back to offerings')
+  assert.strictEqual(plans.length, 1)
+  assert.strictEqual(plans[0].id, 'monthly', 'plan id derived from the package type')
+  assert.strictEqual(plans[0].price.text, '$9.99')
+  assert.strictEqual(plans[0].rcId, '$rc_monthly', 'package placement survives the offerings fallback')
+
+  // customer is gone, the entitlements action answers instead of store history.
+  const status = await iap.status()
+  assert.ok(called.includes('entitlements'), 'status fell back to the entitlements action')
+  assert.deepStrictEqual(status.active, ['premium'])
+  assert.ok(status.all.includes('legacy_pro'), 'inactive entitlements are reported too')
+  assert.deepStrictEqual(status.subscriptions, ['premium_monthly'])
+  assert.strictEqual(await iap.has('premium'), true)
+
+  // paywall is gone, the legacy launchPaywall spelling answers.
+  const paywall = await iap.paywall()
+  assert.ok(called.includes('launchPaywall'), 'paywall fell back to launchPaywall')
+  assert.strictEqual(paywall.ok, true)
+  console.log('  v4 legacy actions: offerings + entitlements + launchPaywall fallbacks ✓')
+}
+
+async function testV3LegacyOfferings () {
+  // A classic build that predates revenuecat://products: the legacy offerings
+  // channel (window.offeringsData, no-argument callback) still answers, so a
+  // paywall can be rendered instead of showing an empty screen.
+  const fired = []
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://offerings')) {
+          win.offeringsData = [{
+            packageId: '$rc_annual', packageType: 'ANNUAL', productId: 'premium_annual',
+            title: 'Premium Annual', priceString: '$79.99', price: 79.99, currency: 'USD',
+            period: { unit: 'year', value: 1, iso8601: 'P1Y' },
+            pricePerUnitString: '$6.67',
+            introOffer: { priceString: '$0.00', period: { unit: 'week', value: 1, iso8601: 'P1W' }, type: 'free_trial' }
+          }]
+          win.offeringsError = null
+          if (typeof win.onRevenueCatOfferings === 'function') win.onRevenueCatOfferings()
+        }
+        // revenuecat://products: silence, this build predates it
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const plans = await iap.plans()
+  assert.ok(fired.some((c) => c.startsWith('revenuecat://products')), 'the unified read is tried first')
+  assert.ok(fired.some((c) => c.startsWith('revenuecat://offerings')), 'then the legacy offerings read')
+  assert.strictEqual(plans.length, 1)
+  assert.strictEqual(plans[0].kind, 'annual')
+  assert.strictEqual(plans[0].price.text, '$79.99')
+  assert.strictEqual(plans[0].product, 'premium_annual')
+  assert.deepStrictEqual(plans[0].trial, { days: 7, eligible: null }, 'the legacy intro offer maps to a trial')
+  console.log('  v3 legacy build: products falls back to the offerings channel ✓')
+}
+
+async function testRuntimeDetection () {
+  // The module bus alone is enough to mean Framework: the wire flag and the
+  // bus are not guaranteed to appear in the same tick, and misreading a
+  // Framework app as classic would fire scheme navigations at it.
+  const busOnly = {
+    navigator: { userAgent: 'despia-iphone' },
+    dsx: { module: { revenuecat: {} } },
+    localStorage: null
+  }
+  global.window = busOnly
+  global.self = busOnly
+  assert.strictEqual(freshRequire().runtime, 4, 'bus without the wire flag is still Framework')
+
+  const wireOnly = { navigator: { userAgent: 'despia-android' }, __dsxWire: {}, localStorage: null }
+  global.window = wireOnly
+  global.self = wireOnly
+  assert.strictEqual(freshRequire().runtime, 4, 'wire flag without the bus is still Framework')
+
+  const classic = { navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' }, localStorage: null }
+  global.window = classic
+  global.self = classic
+  assert.strictEqual(freshRequire().runtime, 3, 'despia user agent alone is the classic runtime')
+
+  const browser = { navigator: { userAgent: 'Mozilla/5.0' }, localStorage: null }
+  global.window = browser
+  global.self = browser
+  assert.strictEqual(freshRequire().runtime, 0, 'a plain browser is neither')
+  console.log('  runtime detection: bus, wire, user agent, and browser ✓')
+}
+
 async function testDestructured () {
   // A natural (and AI-generated) usage shape: pull the methods off the module.
   global.window = { navigator: { userAgent: 'Mozilla/5.0' }, localStorage: null }
@@ -650,6 +809,9 @@ async function testV4LegacyRetry () {
   await testV4OldBuild()
   await testV4Identity()
   await testV4LegacyRetry()
+  await testV4LegacyActions()
+  await testV3LegacyOfferings()
+  await testRuntimeDetection()
   await testDestructured()
   await testRedeemStub()
   await testServer()

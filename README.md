@@ -384,7 +384,9 @@ The package detects the runtime at call time and speaks its native dialect. Same
 | Despia classic (V3) | `despia` user agent | `revenuecat://` schemes + window callbacks |
 | Browser / Base44 preview | neither | safe no-op resolutions |
 
-On older Despia builds that predate the products/customer bridge, `products()`/`plans()` resolve `[]` and `has()` falls back to the device's purchase history, rebuild your app in Despia to get the full catalog API. Newer capabilities (native session login/logout, the `user()` identity read, RevenueCat-anonymous purchases, explicit offers, offer-code redemption) are probed the same way, so the package upgrades itself as builds roll out, you never version-match JavaScript against binaries. On builds that predate the anonymous fallback, the package quietly supplies a stable per-device id for purchases, so nothing breaks either way.
+Detection is automatic and does not depend on you: the Despia Framework is identified by its module bus, the classic runtime by its user agent, and anything else resolves safe empties so your Base44 preview keeps working.
+
+Every native capability is probed at call time and falls back to the next best read the build actually has, so an older binary degrades instead of failing. `plans()` tries the unified catalog, then the offerings read, then the flat product list; `has()` tries the customer envelope, then the entitlements read, then the device's purchase history; `paywall()` accepts either action spelling. Newer capabilities (native session login and logout, the `user()` identity read, RevenueCat-anonymous purchases, explicit offers, offer-code redemption) are probed the same way, and on builds that predate the anonymous fallback the package quietly supplies a stable per-device id for purchases. You never version-match JavaScript against binaries, and rebuilding in Despia simply upgrades the path each call takes.
 
 ## Prompt for AI builders
 

@@ -9,6 +9,34 @@ package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary.
 
+## [1.4.0]
+
+### Changed
+
+- Runtime detection no longer requires two signals to agree. The Despia
+  Framework module bus and its wire flag are set by the same runtime but not
+  necessarily in the same tick, so either one alone now identifies the
+  Framework runtime. A Framework app can no longer be misread as the classic
+  runtime and sent URL-scheme navigations it does not use.
+
+### Added
+
+- Full native API coverage on both runtimes, so an older binary uses the
+  richest read it actually has instead of falling straight through to the
+  poorest one:
+  - `plans()` and `products()` on the Framework runtime try `catalog`, then
+    `offerings`, then the flat `products` action. The middle step keeps
+    offering and package placement, which the flat read loses.
+  - `plans()` and `products()` on the classic runtime fall back to the legacy
+    `revenuecat://offerings` channel when the unified products read is
+    absent, so builds that predate it render a paywall instead of an empty
+    screen.
+  - `status()` and `has()` on the Framework runtime fall back to the
+    dedicated `entitlements` action before resorting to store history, which
+    reports real RevenueCat entitlement state rather than inferring it.
+  - `paywall()` falls back to the legacy `launchPaywall` action spelling on
+    builds that predate the current name.
+
 ## [1.3.0]
 
 ### Added
@@ -88,6 +116,7 @@ against a compiled binary.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
+[1.4.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.0
 [1.3.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.3.0
 [1.2.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.2.0
 [1.1.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.1.0

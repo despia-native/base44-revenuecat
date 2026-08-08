@@ -40,9 +40,14 @@
   function runtime () {
     if (!W) return 0
     try {
-      if (W.__dsxWire && W.dsx && W.dsx.module) return 4
+      // The module bus is the strongest signal, and it is enough on its own:
+      // the wire flag and the bus are set by the same runtime but not
+      // necessarily in the same tick, so requiring both can misread a
+      // Framework app as classic and fire scheme navigations at it.
+      if (W.dsx && W.dsx.module) return 4
+      if (W.__dsxWire) return 4
       var ua = (W.navigator && W.navigator.userAgent || '').toLowerCase()
-      if (ua.indexOf('despia') !== -1) return W.__dsxWire ? 4 : 3
+      if (ua.indexOf('despia') !== -1) return 3
     } catch (e) {}
     return 0
   }
@@ -269,6 +274,128 @@
         type: intro.payment_mode === 'free_trial' ? 'trial' : 'intro'
       } : null,
       offering: null, package: null, packageType: null
+    }
+  }
+
+  // Build a catalog envelope from the V4 `offerings` action, the read that
+  // predates `catalog` on older Framework builds. It carries offering and
+  // package placement, which the flat `products` action does not.
+  function mapV4Offerings (data) {
+    var all = data && data.all || []
+    var offerings = []
+    var products = []
+    var seen = {}
+    for (var i = 0; i < all.length; i++) {
+      var off = all[i] || {}
+      var pkgs = off.packages || []
+      var rows = []
+      for (var j = 0; j < pkgs.length; j++) {
+        var pkg = pkgs[j] || {}
+        var product = mapV4Product(pkg.product)
+        product.offering = off.id || null
+        product.package = pkg.id || null
+        product.packageType = pkg.type || null
+        rows.push({ id: pkg.id || '', type: pkg.type || '', product: product })
+        if (product.id && !seen[product.id]) {
+          seen[product.id] = 1
+          products.push(product)
+        }
+      }
+      offerings.push({ id: off.id || '', current: off.id === (data && data.current), packages: rows })
+    }
+    return {
+      ok: true, current: data && data.current || null,
+      offerings: offerings, products: products,
+      platform: os(), runtime: 4, user: iap._user, project: iap.project,
+      error: null, code: null
+    }
+  }
+
+  // Build a catalog envelope from the classic `revenuecat://offerings` read,
+  // the legacy catalog channel that predates revenuecat://products. Its rows
+  // are a different shape (packageId / productId / priceString / introOffer),
+  // and its answer rides window.offeringsData with a no-argument callback.
+  var V3_PERIOD_UNIT = { day: 'day', week: 'week', month: 'month', year: 'year' }
+
+  function mapV3OfferingRow (row) {
+    var id = row && row.productId || ''
+    var colon = id.indexOf(':')
+    var period = row && row.period || null
+    var intro = row && row.introOffer || null
+    var introPeriod = intro && intro.period || null
+    return {
+      id: id,
+      sku: colon >= 0 ? id.slice(0, colon) : id,
+      plan: colon >= 0 ? id.slice(colon + 1) : null,
+      type: period ? 'subscription' : 'product',
+      title: row && row.title || '',
+      desc: '',
+      price: typeof (row && row.price) === 'number' ? row.price : parseFloat(row && row.price) || 0,
+      priceString: row && row.priceString || '',
+      currency: row && row.currency || null,
+      period: period && period.iso8601 || null,
+      periodUnit: period && V3_PERIOD_UNIT[period.unit] || null,
+      periodCount: period && period.value || null,
+      intro: intro ? {
+        price: 0,
+        priceString: intro.priceString || '',
+        period: introPeriod && introPeriod.iso8601 || null,
+        periodUnit: introPeriod && V3_PERIOD_UNIT[introPeriod.unit] || null,
+        periodCount: introPeriod && introPeriod.value || null,
+        cycles: 1,
+        type: intro.type === 'free_trial' ? 'trial' : 'intro'
+      } : null,
+      offering: null,
+      package: row && row.packageId || null,
+      packageType: row && row.packageType ? String(row.packageType).toLowerCase() : null
+    }
+  }
+
+  function mapV3Offerings (rows, err) {
+    var products = []
+    var packages = []
+    rows = Array.isArray(rows) ? rows : []
+    for (var i = 0; i < rows.length; i++) {
+      var product = mapV3OfferingRow(rows[i])
+      products.push(product)
+      packages.push({ id: product.package || '', type: product.packageType || '', product: product })
+    }
+    return {
+      ok: !err && products.length > 0,
+      current: null,
+      offerings: packages.length ? [{ id: '', current: true, packages: packages }] : [],
+      products: products,
+      platform: os(), runtime: 3, user: iap._user, project: iap.project,
+      error: err && err.message || null,
+      code: err && err.code || null
+    }
+  }
+
+  // Status from the V4 `entitlements` action, whose rows are RC-flavored
+  // ({ id, is_active, product_id, ... }) rather than the unified envelope.
+  function entitlementsStatus (data, rows) {
+    var active = []
+    var all = []
+    var subscriptions = []
+    var list = data && data.all || []
+    var live = data && data.active || []
+    var i
+    for (i = 0; i < list.length; i++) {
+      var id = list[i] && list[i].id
+      if (id && all.indexOf(id) === -1) all.push(id)
+    }
+    for (i = 0; i < live.length; i++) {
+      var a = live[i] || {}
+      if (a.id && active.indexOf(a.id) === -1) active.push(a.id)
+      if (a.product_id && subscriptions.indexOf(a.product_id) === -1) subscriptions.push(a.product_id)
+      if (a.id && all.indexOf(a.id) === -1) all.push(a.id)
+    }
+    return {
+      ok: true, active: active, all: all,
+      subscriptions: subscriptions,
+      purchases: Array.isArray(rows) ? rows : [],
+      user: iap._user, anonymous: !iap._user, management: null,
+      platform: os(), runtime: runtime(), error: null, code: null
     }
   }
 
@@ -563,16 +690,34 @@
         return v4call('catalog', { external_id: self._user, offering: offering }, 8000)
           .then(keepProject)
           .catch(function (err) {
-            // Older V4 build without `catalog`, fall back to the products action.
-            warn('catalog unavailable (' + (err && err.code) + '), falling back to products()')
-            return v4call('products', {}, 8000).then(function (rows) {
-              var products = (Array.isArray(rows) ? rows : []).map(mapV4Product)
-              return { ok: true, current: null, offerings: [], products: products, platform: os(), runtime: 4, user: self._user, project: self.project, error: null, code: null }
-            }).catch(function (e2) {
-              return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 4, user: self._user, project: self.project, error: e2 && e2.message || 'catalog failed', code: e2 && e2.code || 'error' }
+            // Older V4 build without `catalog`. Try `offerings` next, which
+            // still carries offering and package placement, and only then the
+            // flat `products` action.
+            warn('catalog unavailable (' + (err && err.code) + '), falling back to offerings()')
+            return v4call('offerings', {}, 8000).then(function (data) {
+              var envelope = mapV4Offerings(data)
+              if (!envelope.products.length) throw { code: 'empty' }
+              return envelope
+            }).catch(function () {
+              return v4call('products', {}, 8000).then(function (rows) {
+                var products = (Array.isArray(rows) ? rows : []).map(mapV4Product)
+                return { ok: true, current: null, offerings: [], products: products, platform: os(), runtime: 4, user: self._user, project: self.project, error: null, code: null }
+              }).catch(function (e2) {
+                return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 4, user: self._user, project: self.project, error: e2 && e2.message || 'catalog failed', code: e2 && e2.code || 'error' }
+              })
             })
           })
-          .then(function (envelope) { return self._cache(envelope) })
+          .then(function (envelope) {
+            if (offering && envelope && envelope.offerings && envelope.offerings.length) {
+              // The fallback reads ignore the filter, so apply it here.
+              var kept = envelope.offerings.filter(function (o) { return o.id === offering })
+              if (kept.length && kept.length !== envelope.offerings.length) {
+                envelope.offerings = kept
+                envelope.products = kept[0].packages.map(function (p) { return p.product })
+              }
+            }
+            return self._cache(envelope)
+          })
       }
       return chained('products', function () {
         var cmd = 'revenuecat://products'
@@ -583,12 +728,38 @@
         fire(cmd)
         return awaitChannel('revenueCatProducts', 'onRevenueCatProducts', 15000)
       }).then(function (envelope) {
-        if (!envelope) {
-          warn('products query timed out, rebuild your app in Despia to get the latest RevenueCat bridge')
+        if (envelope) return keepProject(envelope)
+        // Older classic build without the unified products read. The legacy
+        // offerings channel predates it and answers a different shape, so a
+        // paywall can still be rendered on those binaries.
+        warn('products query timed out, trying the legacy offerings read (rebuild in Despia for the full catalog API)')
+        return self._v3Offerings(offering)
+      }).then(function (envelope) { return self._cache(envelope) })
+    },
+
+    // The legacy classic-runtime catalog read. Answers on window.offeringsData
+    // with window.offeringsError, and its callback takes no argument, so the
+    // data is read off the window either way.
+    _v3Offerings: function (offering) {
+      var self = this
+      return chained('offerings', function () {
+        try { if (W) { delete W.offeringsError } } catch (e) {}
+        fire('revenuecat://offerings' + (offering ? '?offering=' + encodeURIComponent(offering) : ''))
+        return awaitChannel('offeringsData', 'onRevenueCatOfferings', 10000)
+      }).then(function (rows) {
+        var err = null
+        // This channel's callback is invoked with NO argument, so the payload
+        // is only ever on the window: read it there when the wait resolved
+        // empty (the callback beat the poll).
+        try {
+          if (rows === undefined && W) rows = W.offeringsData
+          err = W && W.offeringsError
+        } catch (e) {}
+        if (!rows && !err) {
           return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 3, user: self._user, project: self.project, error: 'No response from the native layer.', code: 'timeout' }
         }
-        return keepProject(envelope)
-      }).then(function (envelope) { return self._cache(envelope) })
+        return mapV3Offerings(rows, err)
+      })
     },
 
     // Your subscription plans, shaped for rendering a paywall screen:
@@ -720,8 +891,22 @@
             if (self._user) args.external_id = self._user
             v4call('paywall', args, 20000)
               .catch(function (err) {
+                // A build that predates the `paywall` spelling still carries
+                // the legacy `launchPaywall` action.
+                if (err && (err.code === 'no_module' || err.code === 'call_failed' || err.code === 'unknown_action')) {
+                  return v4call('launchPaywall', args, 20000)
+                }
+                throw err
+              })
+              .catch(function (err) {
                 if (!self._user && err && err.code === 'missing_param') {
                   return v4call('paywall', { external_id: self._anon(), offering: offering }, 20000)
+                    .catch(function (e2) {
+                      if (e2 && (e2.code === 'no_module' || e2.code === 'call_failed' || e2.code === 'unknown_action')) {
+                        return v4call('launchPaywall', { external_id: self._anon(), offering: offering }, 20000)
+                      }
+                      throw e2
+                    })
                 }
                 throw err
               })
@@ -773,11 +958,17 @@
       if (rt === 4) {
         return Promise.all([
           v4call('customer', { external_id: self._user }, 8000).catch(function () { return null }),
-          v4call('history', {}, 8000).catch(function () { return null })
+          v4call('history', {}, 8000).catch(function () { return null }),
+          // The dedicated entitlements read, for builds that predate the
+          // unified `customer` envelope: real RevenueCat entitlement state
+          // beats inferring it from the device's store history.
+          v4call('entitlements', {}, 8000).catch(function () { return null })
         ]).then(function (parts) {
           var envelope = parts[0]
           var rows = parts[1]
+          var ents = parts[2]
           if (envelope) return customerStatus(envelope, rows)
+          if (ents) return entitlementsStatus(ents, rows)
           if (rows) return historyStatus(rows)
           return emptyStatus('timeout', 'No response from the native layer.')
         })
