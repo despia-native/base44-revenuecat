@@ -1,24 +1,24 @@
-// base44-revenuecat/server — server-side subscriber verification for Base44
+// base44-revenuecat/server: server-side subscriber verification for Base44
 // backend functions (Deno) and any Node backend.
 //
-// The client can show and hide screens on its own, but anything valuable —
-// paid exports, credit top-ups, premium-only endpoints — must be verified
+// The client can show and hide screens on its own, but anything valuable:
+// paid exports, credit top-ups, premium-only endpoints, must be verified
 // where the user can't tamper with it. These helpers ask RevenueCat directly,
 // so you need NO webhooks and NO subscription table:
 //
 //   import { entitled } from 'npm:base44-revenuecat/server'
 //   const ok = await entitled(user.id, 'premium', { secret: secrets.get('RC_SECRET') })
 //
-// Auth — two options, lowest friction first:
+// Auth, two options, lowest friction first:
 //   • ZERO-SECRET: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
 //     RevenueCat's v1 subscriber endpoint accepts public keys for reads, so
 //     the only config is a value that is public by definition. Pass { key }
 //     or set env RC_KEY. The key must be configured server-side (constant or
-//     env) — never read it from the request, or a caller could point the
+//     env), never read it from the request, or a caller could point the
 //     check at a different RevenueCat app.
 //   • SECRET: a RevenueCat secret key (sk_...) via { secret } / env RC_SECRET
 //     unlocks the v2 API path (project-scoped, higher limits). Server-side
-//     only — never ship it to the client.
+//     only, never ship it to the client.
 // Configuration resolves in this order:
 //   1. opts.secret / opts.key / opts.project
 //   2. env RC_SECRET / RC_KEY / RC_PROJECT
@@ -26,7 +26,7 @@
 //
 // With a project id (the "Global project ID" from Despia > Your App >
 // Integrations > RevenueCat) AND a secret key, the check uses RevenueCat's
-// v2 API; otherwise — or if v2 is unavailable — it falls back to the v1
+// v2 API; otherwise, or if v2 is unavailable, it falls back to the v1
 // subscribers API. Entitlements are always matched by their human lookup key
 // ("premium"), on either path.
 
@@ -55,7 +55,7 @@ function creds (opts) {
     env('REVENUECAT_SECRET_KEY') || env('REVENUECAT_PUBLIC_KEY')
   const project = opts.project || env('RC_PROJECT') || env('REVENUECAT_PROJECT_ID') || null
   if (!auth) {
-    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key — or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
+    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
   }
   // Only secret keys may use the v2 API; public keys always ride v1.
   return { secret: auth, project: auth.indexOf('sk_') === 0 ? project : null }
@@ -130,7 +130,7 @@ async function entitlements (user, opts) {
     try {
       return await v2Entitlements(user, c)
     } catch (e) {
-      // v2 key/endpoint mismatch — the v1 subscribers API answers for every key.
+      // v2 key/endpoint mismatch, the v1 subscribers API answers for every key.
     }
   }
   return v1Entitlements(user, c)

@@ -1,4 +1,4 @@
-// base44-revenuecat — RevenueCat in-app purchases & subscriptions for Base44
+// base44-revenuecat: RevenueCat in-app purchases & subscriptions for Base44
 // apps shipped as native iOS / Android apps with Despia (https://despia.com).
 //
 // One tiny promise-based API over the App Store (StoreKit) and Google Play
@@ -14,7 +14,7 @@
 // Works on BOTH Despia runtimes with zero configuration:
 //   - Despia V3 (the classic runtime): URL-scheme bridge + window callbacks
 //   - Despia V4 (Despia Framework):    window.dsx module promises
-// and safely no-ops in a plain browser (Base44 preview) — every call resolves,
+// and safely no-ops in a plain browser (Base44 preview), every call resolves,
 // nothing throws, so your app keeps working while you build.
 //
 // Server-side entitlement verification for Base44 backend functions lives in
@@ -108,12 +108,12 @@
     if (draining || !queue.length) return
     draining = true
     try { W.despia = queue.shift() } catch (e) {}
-    // Successive scheme navigations can swallow each other on iOS — space them.
+    // Successive scheme navigations can swallow each other on iOS, space them.
     setTimeout(function () { draining = false; drain() }, 80)
   }
 
   // Await `window[varName]` (poll) and/or `window[cbName]` (push), whichever
-  // lands first. Resolves undefined on timeout — callers map that to a safe
+  // lands first. Resolves undefined on timeout, callers map that to a safe
   // empty. Handles empty arrays/objects correctly (a known pitfall of the
   // classic variable observer).
   function awaitChannel (varName, cbName, timeoutMs, accept) {
@@ -217,7 +217,7 @@
     try {
       if (envelope && envelope.project && !iap.project) iap.project = envelope.project
       // An envelope with runtime:3 proves this V3 build carries the unified
-      // bridge — safe to use the identity session schemes from here on.
+      // bridge, safe to use the identity session schemes from here on.
       if (envelope && envelope.runtime === 3) {
         iap._v3 = true
         v3bind()
@@ -227,7 +227,7 @@
   }
 
   // Deferred V3 session bind: fire the native login only once the build has
-  // proven (by answering an envelope) that it carries the identity bridge —
+  // proven (by answering an envelope) that it carries the identity bridge:
   // old builds never see the probe, so they never show a stray prompt.
   function v3bind () {
     if (!iap._v3 || !iap._user || iap._v3bound || runtime() !== 3) return
@@ -420,7 +420,7 @@
     // 4 (Despia Framework) | 3 (classic Despia) | 0 (browser)
     get runtime () { return runtime() },
 
-    // Resolves { native, os, runtime, user, project } — handy on app start.
+    // Resolves { native, os, runtime, user, project }, handy on app start.
     ready: function () {
       var self = this
       return Promise.resolve().then(function () {
@@ -428,11 +428,11 @@
       })
     },
 
-    // Identify the current user to RevenueCat — the everyday call:
+    // Identify the current user to RevenueCat, the everyday call:
     //   await revenuecat.user(base44User.id)
     // Use your Base44 user's stable id (not an email) so client purchases and
     // your server-side checks always name the same RevenueCat customer.
-    // Switching accounts is just another user(newId) — no logout in between
+    // Switching accounts is just another user(newId), no logout in between
     // (RevenueCat supports logIn() straight from another identified user).
     // With no argument, resolves the current identity.
     user: function (id) {
@@ -463,7 +463,7 @@
 
     // Clear the current identity. On newer builds this also rotates the
     // native RevenueCat user to a fresh anonymous id; on older builds the
-    // package stops sending the id (see SPEC.md §3) — apps with accounts
+    // package stops sending the id (see SPEC.md §3), apps with accounts
     // should gate on their own auth state too:
     //   const premium = user && await revenuecat.has('premium')
     logout: function () {
@@ -477,7 +477,7 @@
         v4call('logout', {}, 8000).catch(function () {})
       }
       if (runtime() === 3 && this._v3) {
-        fire('revenuecat://logout')   // build proven — rotate the native user too
+        fire('revenuecat://logout')   // build proven, rotate the native user too
       }
       return Promise.resolve({ user: null, anonymous: true })
     },
@@ -518,7 +518,7 @@
         return v4call('catalog', { external_id: self._user, offering: offering }, 8000)
           .then(keepProject)
           .catch(function (err) {
-            // Older V4 build without `catalog` — fall back to the products action.
+            // Older V4 build without `catalog`, fall back to the products action.
             warn('catalog unavailable (' + (err && err.code) + '), falling back to products()')
             return v4call('products', {}, 8000).then(function (rows) {
               var products = (Array.isArray(rows) ? rows : []).map(mapV4Product)
@@ -539,7 +539,7 @@
         return awaitChannel('revenueCatProducts', 'onRevenueCatProducts', 15000)
       }).then(function (envelope) {
         if (!envelope) {
-          warn('products query timed out — rebuild your app in Despia to get the latest RevenueCat bridge')
+          warn('products query timed out, rebuild your app in Despia to get the latest RevenueCat bridge')
           return { ok: false, current: null, offerings: [], products: [], platform: os(), runtime: 3, user: self._user, project: self.project, error: 'No response from the native layer.', code: 'timeout' }
         }
         return keepProject(envelope)
@@ -550,7 +550,7 @@
     //   [{ id: 'monthly', title, price: { value, text, currency },
     //      period: { iso, value, unit }, trial: { days, eligible },
     //      intro, offers, product, rcId, kind, type }]
-    // price.text is ALWAYS the value to display — localized by the store.
+    // price.text is ALWAYS the value to display, localized by the store.
     // plan.id (or the whole plan / its product id) feeds straight into buy().
     plans: function (offering) {
       var self = this
@@ -562,14 +562,14 @@
 
     _catalog: null,
 
-    // Resolve a buy() argument — plan id ('monthly'), kind, '$rc_' package id,
-    // or store product id — to the underlying store product id.
+    // Resolve a buy() argument, plan id ('monthly'), kind, '$rc_' package id,
+    // or store product id, to the underlying store product id.
     _resolve: function (x) {
       var self = this
       var s = String(x && x.product || x)     // accept a whole plan object too
       var hit = findPlan(self._catalog && self._catalog.plans, s)
       if (hit) return Promise.resolve(hit.product)
-      // Reverse-DNS or base-plan-qualified ids are store product ids already —
+      // Reverse-DNS or base-plan-qualified ids are store product ids already:
       // don't spend a catalog roundtrip on them.
       if (s.indexOf(':') !== -1 || s.indexOf('.') !== -1) return Promise.resolve(s)
       if (self._catalog) return Promise.resolve(s)
@@ -584,7 +584,7 @@
     // store sheet settles: { ok, cancelled, product, transaction,
     // entitlements, error, code }. Never rejects. Free trials and intro
     // offers apply automatically when the store deems the user eligible.
-    // options.offer names a specific promotional / Google offer id — it is
+    // options.offer names a specific promotional / Google offer id, it is
     // forwarded to the native layer (honored on builds that support explicit
     // offers; ignored, falling back to default offer logic, on older builds).
     buy: function (product, options) {
@@ -649,7 +649,7 @@
           })
           if (rt === 4) {
             // The V4 action settles at presentation; only a rejection (paywall
-            // never shown) ends the wait early — the outcome rides the shared
+            // never shown) ends the wait early, the outcome rides the shared
             // result channel exactly like V3.
             v4call('paywall', { external_id: self._user || self._anon(), offering: offering }, 20000)
               .catch(function (err) { settle(rejection(err, 'paywall')) })
@@ -662,7 +662,7 @@
       })
     },
 
-    // RevenueCat Customer Center — native manage/restore/refund UI. Resolves
+    // RevenueCat Customer Center, native manage/restore/refund UI. Resolves
     // { ok: true } when the user closes it. Subscribe to its events with
     // on('center', fn).
     center: function () {
@@ -716,7 +716,7 @@
             return customerStatus(envelope, r && r.purchases || [])
           })
         }
-        // Older V3 build without revenuecat://customer — the store history
+        // Older V3 build without revenuecat://customer, the store history
         // still answers the entitlement question.
         return self.restore()
       })
@@ -749,7 +749,7 @@
       })
     },
 
-    // Normalized full customer state — status() plus a per-entitlement map:
+    // Normalized full customer state, status() plus a per-entitlement map:
     //   { user, active: ['premium'], entitlements: { premium: { active,
     //     product, period, bought, expires, renews } }, manage }
     // period is 'trial' | 'intro' | 'promo' | 'normal' when the runtime
@@ -799,7 +799,7 @@
     // Apple subscription offer-code redemption (iOS). Opens the native
     // redemption sheet on builds that carry the redeem bridge; resolves
     // { supported: false } everywhere else (Google Play has no in-app
-    // equivalent — Play codes are redeemed in the Play Store app).
+    // equivalent, Play codes are redeemed in the Play Store app).
     redeem: function () {
       var self = this
       var rt = runtime()
@@ -829,7 +829,7 @@
 
     // Events: 'result' (every purchase/paywall outcome), 'purchase' (store
     // confirmed a transaction / customer info changed), 'center' (Customer
-    // Center activity), 'user' (identity changed — native login/logout
+    // Center activity), 'user' (identity changed, native login/logout
     // settled, with the unified user envelope). Returns an unsubscribe
     // function.
     on: function (event, fn) {
@@ -874,7 +874,7 @@
     }
   }
 
-  // Bind every method to the module so destructured usage keeps working —
+  // Bind every method to the module so destructured usage keeps working:
   //   const { plans, buy, has } = revenuecat
   // is a natural thing to write (and for an AI builder to generate), and
   // without this it would throw on `this`. Accessors (id/native/os/runtime)

@@ -1,7 +1,7 @@
-// Type definitions for base44-revenuecat — RevenueCat in-app purchases &
+// Type definitions for base44-revenuecat: RevenueCat in-app purchases &
 // subscriptions for Base44 apps built into native iOS / Android apps with Despia.
 
-/** One product with live store pricing — identical JSON on iOS (StoreKit) and Android (Google Play Billing). */
+/** One product with live store pricing, identical JSON on iOS (StoreKit) and Android (Google Play Billing). */
 export interface Product {
   /** Pass this straight to buy(). iOS: the App Store product id. Android: "subId:basePlanId" for subscriptions. */
   id: string
@@ -40,7 +40,7 @@ export interface Product {
   offers?: PlanOffer[]
 }
 
-/** Nested money value — text is ALWAYS the display string, localized by the store. */
+/** Nested money value, text is ALWAYS the display string, localized by the store. */
 export interface PlanPrice {
   value: number
   text: string
@@ -58,7 +58,7 @@ export interface PlanPeriod {
 export interface PlanOffer {
   id: string
   type: 'trial' | 'intro' | 'promo' | string
-  /** null = unknown on this build — the store enforces eligibility at purchase time. */
+  /** null = unknown on this build, the store enforces eligibility at purchase time. */
   eligible: boolean | null
   tags?: string[]
   price?: PlanPrice
@@ -67,9 +67,9 @@ export interface PlanOffer {
   phases?: Array<{ type: string, price: PlanPrice, period: PlanPeriod, cycles?: number }>
 }
 
-/** A subscription plan shaped for rendering a paywall screen — from plans(). */
+/** A subscription plan shaped for rendering a paywall screen, from plans(). */
 export interface Plan {
-  /** Stable short id — the packageType when unique ('monthly'), else derived. Feeds buy(). */
+  /** Stable short id, the packageType when unique ('monthly'), else derived. Feeds buy(). */
   id: string
   /** RevenueCat package identifier, e.g. "$rc_monthly". */
   rcId: string | null
@@ -107,7 +107,7 @@ export interface Catalog {
   /** The current offering id configured in RevenueCat, or null. */
   current?: string | null
   offerings: Offering[]
-  /** Flat, de-duplicated product list — what products() returns. */
+  /** Flat, de-duplicated product list, what products() returns. */
   products: Product[]
   platform: 'ios' | 'android' | 'web'
   /** 4 = Despia Framework, 3 = classic Despia runtime, 0 = browser. */
@@ -119,7 +119,7 @@ export interface Catalog {
   code: string | null
 }
 
-/** Outcome of buy() / paywall() — resolves, never rejects. */
+/** Outcome of buy() / paywall(), resolves, never rejects. */
 export interface Result {
   ok: boolean
   /** true when the user closed the sheet / paywall without buying. */
@@ -151,7 +151,7 @@ export interface BuyOptions {
 /** Entitlement + purchase snapshot returned by status() / restore(). */
 export interface Status {
   ok: boolean
-  /** Active entitlement ids — gate premium features on these. */
+  /** Active entitlement ids, gate premium features on these. */
   active: string[]
   /** Every entitlement id ever seen for this user. */
   all: string[]
@@ -229,11 +229,11 @@ export interface RevenueCat {
   /** 4 = Despia Framework, 3 = classic Despia runtime, 0 = browser. */
   readonly runtime: number
 
-  /** Resolves environment info — handy on app start. */
+  /** Resolves environment info, handy on app start. */
   ready(): Promise<{ native: boolean, os: string, runtime: number, user: string | null, project: string | null }>
 
   /**
-   * Identify the user to RevenueCat — use your Base44 user's stable id so
+   * Identify the user to RevenueCat, use your Base44 user's stable id so
    * client purchases and server checks always name the same customer.
    * Switching accounts is just another user(newId). No argument resolves the
    * current identity.
@@ -252,7 +252,7 @@ export interface RevenueCat {
   /** The full offerings/packages catalog envelope. */
   offers(offering?: string): Promise<Catalog>
 
-  /** Native purchase — accepts a plan id ('monthly'), a product id, or a plan object. */
+  /** Native purchase, accepts a plan id ('monthly'), a product id, or a plan object. */
   buy(product: string | Plan, options?: BuyOptions): Promise<Result>
   /** RevenueCat's native paywall (dashboard-designed). Resolves once per presentation. */
   paywall(offering?: string): Promise<Result>

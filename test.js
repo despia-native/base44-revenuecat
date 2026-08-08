@@ -1,6 +1,6 @@
 // Smoke tests for base44-revenuecat: simulates the three runtimes the package
-// targets — plain browser, Despia V3 (scheme bridge + window callbacks), and
-// Despia V4 (window.dsx module promises) — and asserts the unified shapes.
+// targets, plain browser, Despia V3 (scheme bridge + window callbacks), and
+// Despia V4 (window.dsx module promises), and asserts the unified shapes.
 // Run: node test.js
 
 'use strict'
@@ -149,7 +149,7 @@ async function testV3 () {
   assert.strictEqual(annual.product, 'premium:annual')
   assert.strictEqual(annual.kind, 'annual')
 
-  // buy() accepts the plan id and resolves it to the store product id —
+  // buy() accepts the plan id and resolves it to the store product id:
   // the scheme interceptor above asserts product=premium%3Amonthly.
   const buy = await iap.buy('monthly')
   assert.strictEqual(buy.ok, true)
@@ -169,7 +169,7 @@ async function testV3 () {
   assert.strictEqual(await iap.has('nope'), false)
 
   // Deferred session bind: once envelopes proved the build, the native login
-  // fired for the identified user — and never before the first envelope.
+  // fired for the identified user, and never before the first envelope.
   await new Promise((r) => setTimeout(r, 250))
   assert.ok(fired.some((c) => c.startsWith('revenuecat://login?external_id=u1')), 'native login fired after capability proof')
   const firstEnvelopeCmd = fired.findIndex((c) => c.startsWith('revenuecat://products'))
