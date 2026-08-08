@@ -69,6 +69,7 @@
     "server.mjs",
     "server.d.ts",
     "README.md",
+    "ENTITLEMENTS.md",
     "CHANGELOG.md",
     "LICENSE"
   ],

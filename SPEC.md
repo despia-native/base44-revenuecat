@@ -15,6 +15,11 @@ await revenuecat.buy('monthly')
 if (await revenuecat.has('premium')) showPremium()
 ```
 
+`'premium'` is a placeholder throughout this document. Entitlement ids are defined by the
+developer in their own RevenueCat dashboard; no id is built in, reserved, or special-cased
+anywhere in the package or in any of the three native runtimes. Every entitlement check
+compares the caller's literal string against the ids RevenueCat reports for that customer.
+
 ---
 
 ## 1. Public API
