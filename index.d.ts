@@ -180,6 +180,8 @@ export interface Status {
   anonymous: boolean
   /** Native subscription-management URL, when available. */
   management: string | null
+  /** Raw per-entitlement lifecycle state from the native layer, when the build reports it. info() is the friendlier view over this. */
+  details?: Record<string, Record<string, unknown>> | null
   platform: string
   runtime: number
   error: string | null
@@ -195,11 +197,21 @@ export interface Info {
   entitlements: Record<string, {
     active: boolean
     product: string | null
-    /** 'normal' | 'trial' | 'intro' | 'promo' when the runtime reports it, else null. */
+    /** What the user is paying right now: 'normal' | 'trial' | 'intro' | 'prepaid', or null on builds that do not report it. */
     period: string | null
     bought: string | null
     expires: string | null
+    /** false once the user turns auto-renew off, even while access continues. */
     renews: boolean
+    /** When the user cancelled, while still inside the paid period. The window where a win-back offer is worth showing. Null otherwise, and on builds that predate lifecycle state. */
+    unsubscribed?: string | null
+    /** Set while the store is retrying a failed payment (grace period). Access usually continues meanwhile. */
+    billingIssue?: string | null
+    /** 'app_store' | 'play_store' | 'stripe' | 'promotional' | 'amazon' | ... */
+    store?: string | null
+    /** 'purchased' | 'family_shared'. */
+    ownership?: string | null
+    sandbox?: boolean
   }>
   subscriptions: string[]
   /** Native subscription-management URL, when available. */

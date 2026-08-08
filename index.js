@@ -468,6 +468,24 @@
     }
   }
 
+  // The info() envelope, shared by the native-detail path and the older
+  // history-inference path so both answer exactly the same shape.
+  function infoFrom (s, map) {
+    return {
+      ok: s.ok,
+      user: s.user || iap._user,
+      anonymous: s.anonymous,
+      active: s.active || [],
+      entitlements: map,
+      subscriptions: s.subscriptions || [],
+      manage: s.management || null,
+      platform: s.platform,
+      runtime: s.runtime,
+      error: s.error,
+      code: s.code
+    }
+  }
+
   function customerStatus (envelope, rows) {
     var ents = envelope && envelope.entitlements || {}
     keepProject(envelope)
@@ -480,6 +498,10 @@
       user: envelope.user || iap._user,
       anonymous: envelope.anonymous !== false,
       management: envelope.management || null,
+      // Per-entitlement lifecycle state, when the build reports it. Carried
+      // through untouched so info() can read real state instead of inferring
+      // it from store history. Null on builds that predate it.
+      details: envelope.details || null,
       platform: envelope.platform || os(),
       runtime: envelope.runtime || runtime(),
       error: envelope.error || null,
@@ -1091,6 +1113,33 @@
         var map = {}
         var rows = s.purchases || []
         var ids = s.all && s.all.length ? s.all : s.active || []
+        // Current builds report per-entitlement state natively, which is the
+        // truth: it knows about renewals, cancellations still inside the paid
+        // period, and billing retries, none of which the device's store
+        // history can express. Older builds fall through to the inference
+        // below, so nothing regresses.
+        if (s.details) {
+          for (var d in s.details) {
+            var x = s.details[d] || {}
+            map[d] = {
+              active: !!x.active,
+              product: x.product || null,
+              period: x.period || null,
+              bought: x.bought || null,
+              expires: x.expires || null,
+              renews: !!x.renews,
+              // Set when the user turned auto-renew off but still has access:
+              // the window where a win-back offer is worth showing.
+              unsubscribed: x.unsubscribed || null,
+              // Set while the store retries a failed payment (grace period).
+              billingIssue: x.billingIssue || null,
+              store: x.store || null,
+              ownership: x.ownership || null,
+              sandbox: !!x.sandbox
+            }
+          }
+          return infoFrom(s, map)
+        }
         for (var i = 0; i < ids.length; i++) {
           var id = ids[i]
           var row = null
@@ -1111,19 +1160,7 @@
             renews: row ? !!row.willRenew : false
           }
         }
-        return {
-          ok: s.ok,
-          user: s.user || self._user,
-          anonymous: s.anonymous,
-          active: s.active || [],
-          entitlements: map,
-          subscriptions: s.subscriptions || [],
-          manage: s.management || null,
-          platform: s.platform,
-          runtime: s.runtime,
-          error: s.error,
-          code: s.code
-        }
+        return infoFrom(s, map)
       })
     },
 

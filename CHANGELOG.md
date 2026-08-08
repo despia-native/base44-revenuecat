@@ -9,6 +9,28 @@ package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary.
 
+## [1.5.0]
+
+### Added
+
+- `info()` now reports real per-entitlement lifecycle state on builds that
+  provide it, instead of inferring what it can from the device's store
+  history. Each entitlement gains `unsubscribed` (set when the user turned
+  auto-renew off while still inside the paid period, which is the window
+  where a win-back offer is worth showing), `billingIssue` (set while the
+  store retries a failed payment), `store`, `ownership`, and `sandbox`, and
+  `period` now reports the real billing phase. This is the difference between
+  knowing someone is entitled and knowing they are entitled but leaving.
+- `status()` carries the raw `details` map through for callers that want it
+  unshaped.
+
+### Compatibility
+
+- Builds that predate lifecycle state fall through to the previous
+  history-based inference, so `info()` answers the same shape everywhere and
+  nothing regresses. The new per-entitlement fields are optional in the types
+  for exactly that reason.
+
 ## [1.4.3]
 
 Documentation only. No runtime change: `index.js`, the type definitions, and
@@ -189,6 +211,7 @@ badges.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
+[1.5.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.5.0
 [1.4.3]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.3
 [1.4.2]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.2
 [1.4.1]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.1
