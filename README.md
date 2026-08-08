@@ -2,10 +2,7 @@
 
 **Sell real App Store and Google Play subscriptions from your Base44 app.** This package connects a Base44 app, published as a native iOS and Android app with [Despia](https://despia.com), to Apple StoreKit and Google Play Billing through the RevenueCat SDK that Despia compiles into your binary. Query products with live store pricing, launch native paywalls, run purchases, check entitlements, and verify subscribers server-side in Base44 backend functions. Promise-based, three-letter-simple, zero native code, zero webhooks.
 
-[![npm version](https://img.shields.io/npm/v/base44-revenuecat.svg)](https://www.npmjs.com/package/base44-revenuecat)
-[![npm downloads](https://img.shields.io/npm/dm/base44-revenuecat.svg)](https://www.npmjs.com/package/base44-revenuecat)
-[![types included](https://img.shields.io/npm/types/base44-revenuecat.svg)](./index.d.ts)
-[![license](https://img.shields.io/npm/l/base44-revenuecat.svg)](./LICENSE)
+[![on npm](https://img.shields.io/npm/v/base44-revenuecat)](https://www.npmjs.com/package/base44-revenuecat) · [![tests passing](https://img.shields.io/github/actions/workflow/status/despia-native/base44-revenuecat/test.yml?branch=main&label=tests)](https://github.com/despia-native/base44-revenuecat/actions/workflows/test.yml) · [![TypeScript types](https://img.shields.io/npm/types/base44-revenuecat)](https://github.com/despia-native/base44-revenuecat/blob/main/index.d.ts) · [![Apache-2.0 licensed](https://img.shields.io/npm/l/base44-revenuecat)](https://github.com/despia-native/base44-revenuecat/blob/main/LICENSE) · [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](https://github.com/despia-native/base44-revenuecat/blob/main/package.json)
 
 For Base44 makers shipping a real iOS and Android app: monthly and annual subscriptions,
 one-time unlocks, consumable credits, free trials and introductory offers, all billed by
