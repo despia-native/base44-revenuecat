@@ -9,6 +9,32 @@ package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary.
 
+## [1.4.3]
+
+Documentation only. No runtime change: `index.js`, the type definitions, and
+both server entries are byte-identical to 1.4.2. Published so the npm page,
+which renders the README from the published tarball, carries the corrected
+badges.
+
+### Fixed
+
+- The types and license badges linked relatively, which resolves on GitHub but
+  not on npmjs.com, so two of four badges were dead links on the page most
+  people actually see. Both now use absolute URLs.
+- The license badge rendered "package not found" because of the legacy `.svg`
+  suffix on the shields endpoint. Dropped from every badge URL.
+
+### Changed
+
+- The badge row is now version, tests, types, license, and dependency count.
+  The monthly downloads badge is gone: it reported zero on an hours-old
+  package. Every badge URL was fetched and read before shipping, so each one
+  is known to render its true value rather than an error string.
+- Alt text now states the fact each badge carries, so if the images fail to
+  load, which is common on npmjs.com, the line still reads as intended
+  information ("on npm, tests passing, TypeScript types, Apache-2.0 licensed,
+  zero dependencies") instead of a row of broken labels.
+
 ## [1.4.2]
 
 ### Fixed
@@ -163,6 +189,7 @@ against a compiled binary.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
+[1.4.3]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.3
 [1.4.2]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.2
 [1.4.1]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.1
 [1.4.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.0
