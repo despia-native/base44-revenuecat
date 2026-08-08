@@ -46,18 +46,22 @@ on either model.
 Capability detection per call, never exposed to the app:
 
 ```
-window.dsx.module  OR  window.__dsxWire   → V4: dsx.module.revenuecat.* promises
-'despia' user agent, neither of the above → V3: revenuecat:// schemes + window channels
+window.__dsxWire                          → V4: dsx.module.revenuecat.* promises
+else 'despia' user agent                  → V3: revenuecat:// schemes + window channels
+else window.dsx.module                    → V4: a non-native Framework surface
 neither                                   → browser: safe no-op resolutions
 ```
 
-EITHER V4 signal is sufficient (LIVE, 1.4.0). The two are not interchangeable, and the order
-matters: the runtime installs `window.__dsxWire` at document start and LOCKS it
-(`writable:false, configurable:false`), then binds the `window.dsx` facade from runtime.js a
-moment later. The wire is therefore the authoritative marker; `window.dsx` is page-overridable
-by design (the framework's own note calls an unguarded `dsx` probe "a lying probe"), so any
-page script could otherwise impersonate a native app. Requiring both would also misread a V4
-app as V3 and fire scheme navigations at it, the one mistake with a native-alert hazard (below).
+The ORDER is the contract (LIVE, 1.4.2). The runtime installs `window.__dsxWire` at document
+start on both platforms (`WKUserScript(.atDocumentStart)` on iOS, `addDocumentStartJavaScript`
+on Android) and LOCKS it (`writable:false, configurable:false`), then binds the `window.dsx`
+facade from runtime.js a moment later. So the wire is authoritative and unspoofable, and a
+`despia` app WITHOUT it is classic by definition. `window.dsx` is an ordinary writable global,
+page-overridable by design (the framework's own note calls an unguarded `dsx` probe "a lying
+probe"), so it is consulted LAST: checking it before the user agent let any page-defined `dsx`
+turn a classic app into a V4 one, after which every call failed `no_module` and no scheme was
+ever fired. Requiring both signals is equally wrong: it would misread a V4 app as V3 and fire
+scheme navigations at it, the mistake with a native-alert hazard (below).
 
 Because the wire lands first, a call can arrive while the bus is still unbound. The transport
 waits up to 2s for `dsx.module` in that case rather than failing `no_module` (LIVE, 1.4.1);

@@ -9,6 +9,40 @@ package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary.
 
+## [1.4.2]
+
+### Fixed
+
+- **A filtered offering could return the whole catalog.** On a build without
+  the `catalog` action, asking for one offering by id filtered the fallback
+  result only when it matched something, so an unknown id fell through to
+  every offering. A win-back or test price could be rendered to a full-price
+  user. An unknown id now answers `offeringNotFoundError` with no products,
+  exactly like the native catalog action does.
+- **A paying subscriber could read as not entitled.** On a build with the
+  `entitlements` action but no `customer` envelope, an empty entitlements
+  answer (a project with nothing mapped) outranked the device's store
+  history, so `has('premium')` returned false for a live subscription. The
+  entitlements read now wins only when it actually reports something, and an
+  empty answer is the last resort rather than the first.
+- **Calls were slow on builds that exclude RevenueCat.** The module-bus wait
+  gated on the wire, which every Framework surface carries, so a build
+  without the module waited the full two seconds per call (six seconds for
+  `plans()`). A bound bus without the module now answers immediately.
+- **A page-defined `window.dsx` could disable purchases on the classic
+  runtime.** Detection checked the writable `dsx` global before the user
+  agent, so a page (or another library) defining it made a classic app look
+  like a Framework one, after which every call failed and no URL scheme was
+  ever fired. The locked `__dsxWire` is now checked first, then the user
+  agent, then the bus.
+- **The legacy offerings channel invented values.** It reports only a display
+  string and a payment mode, so hardcoding a zero price and a single cycle
+  made every paid introductory offer read as a zero-price pay-up-front. Price
+  and cycles are now reported as unknown, and the store's own payment mode is
+  carried on `intro.mode` and preferred when shaping plans.
+- An empty result from that channel now carries an error and a code instead
+  of `ok:false` with nothing to display.
+
 ## [1.4.1]
 
 ### Fixed
@@ -129,6 +163,7 @@ against a compiled binary.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
+[1.4.2]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.2
 [1.4.1]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.1
 [1.4.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.0
 [1.3.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.3.0
