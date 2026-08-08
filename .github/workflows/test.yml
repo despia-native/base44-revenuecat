@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run the runtime simulation suite
+        run: npm test
+      - name: Check the package contents resolve
+        run: |
+          node -e "require('./index.js')"
+          node -e "require('./server.cjs')"
+          node --input-type=module -e "import('./server.mjs')"
