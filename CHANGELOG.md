@@ -9,6 +9,19 @@ package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary.
 
+## [1.4.1]
+
+### Fixed
+
+- A call made in the moment between the Despia Framework locking
+  `window.__dsxWire` (at document start) and binding the `window.dsx` module
+  bus (a moment later) failed immediately with `no_module`, so an early
+  `plans()` or `paywall()` could resolve empty on a perfectly capable app.
+  The runtime is correctly identified from the locked wire, so the call layer
+  now waits up to two seconds for the bus to bind instead of giving up on the
+  first miss. Pages that are not the Framework never wait, since the absence
+  of the wire is answered instantly.
+
 ## [1.4.0]
 
 ### Changed
@@ -116,6 +129,7 @@ against a compiled binary.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
+[1.4.1]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.1
 [1.4.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.0
 [1.3.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.3.0
 [1.2.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.2.0
