@@ -613,6 +613,65 @@ async function testBusArrivesLate () {
   console.log('  late bus: a call made before window.dsx binds still works ✓')
 }
 
+async function testEntitlementLifecycleState () {
+  // Current builds report per-entitlement lifecycle state natively. info()
+  // must use it verbatim, because it expresses things the device's store
+  // history cannot: a cancellation still inside the paid period, and a
+  // billing retry.
+  const detail = {
+    premium: {
+      active: true, product: 'premium_monthly', period: 'trial', renews: false,
+      bought: '2026-01-04T10:00:00Z', first: '2025-11-04T10:00:00Z',
+      expires: '2026-02-04T10:00:00Z',
+      unsubscribed: '2026-01-20T09:00:00Z', billingIssue: null,
+      store: 'app_store', ownership: 'purchased', sandbox: false
+    }
+  }
+  const win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      customer: () => Promise.resolve(Object.assign(envelope(4), {
+        entitlements: { active: ['premium'], all: ['premium'] },
+        subscriptions: ['premium_monthly'], management: null, details: detail
+      })),
+      history: () => Promise.resolve([])
+    } } }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const info = await iap.info()
+  const p = info.entitlements.premium
+  assert.strictEqual(p.active, true)
+  assert.strictEqual(p.renews, false, 'auto-renew is off')
+  assert.strictEqual(p.unsubscribed, '2026-01-20T09:00:00Z', 'cancelled but still inside the paid period')
+  assert.strictEqual(p.period, 'trial')
+  assert.strictEqual(p.store, 'app_store')
+  assert.strictEqual(p.expires, '2026-02-04T10:00:00Z')
+  // The distinction the id arrays could never express: still entitled, but
+  // leaving. That is exactly when a win-back offer is worth showing.
+  assert.ok(p.active && !p.renews && p.unsubscribed, 'active, not renewing, cancellation known')
+
+  // A build that does not report details must still answer the old way.
+  const legacyWin = {
+    navigator: { userAgent: 'despia-android' }, native_os: 'android', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      customer: () => Promise.resolve(Object.assign(envelope(4), {
+        entitlements: { active: ['premium'], all: ['premium'] }, subscriptions: [], management: null
+      })),
+      history: () => Promise.resolve([{ productId: 'premium_monthly', entitlementId: 'premium', isActive: true, willRenew: true, purchaseDate: '2026-01-04T10:00:00Z', expirationDate: '2026-02-04T10:00:00Z' }])
+    } } }
+  }
+  global.window = legacyWin
+  global.self = legacyWin
+  const legacy = freshRequire()
+  const oldInfo = await legacy.info()
+  assert.strictEqual(oldInfo.entitlements.premium.active, true, 'older build still answers')
+  assert.strictEqual(oldInfo.entitlements.premium.product, 'premium_monthly', 'inferred from store history')
+  console.log('  entitlement lifecycle: native state wins, older builds still answer ✓')
+}
+
 async function testRuntimeDetection () {
   // The module bus alone is enough to mean Framework: the wire flag and the
   // bus are not guaranteed to appear in the same tick, and misreading a
@@ -974,6 +1033,7 @@ async function testV4LegacyRetry () {
   await testModuleExcludedFailsFast()
   await testLegacyIntroOfferFidelity()
   await testBusArrivesLate()
+  await testEntitlementLifecycleState()
   await testRuntimeDetection()
   await testDestructured()
   await testRedeemStub()
