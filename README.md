@@ -25,6 +25,8 @@ await revenuecat.paywall()                // or: the RevenueCat paywall you desi
 if (await revenuecat.has('premium')) unlockPremium()   // client-side entitlement gate
 ```
 
+> **`premium` is a placeholder for your own entitlement id, not a built-in.** RevenueCat ships no default entitlements, so nothing called `premium` exists until you create it yourself in the RevenueCat dashboard (Product catalog → Entitlements) and attach your App Store and Play Store products to it. Use **your** id everywhere this README writes `premium`. Until that entitlement exists and has products attached, `has('premium')` stays false for every user forever, including immediately after a real purchase that Apple or Google actually charged for.
+
 Every call returns a promise and **never throws**. In the Base44 browser preview each method resolves a safe empty result, so you can build and preview your paywall logic on the web and it simply comes alive inside the installed app.
 
 ---
@@ -47,7 +49,7 @@ You do **not** need webhooks, a subscriptions table, or native code. The two que
 1. Create a free account at [app.revenuecat.com](https://app.revenuecat.com) (free until well past your first revenue).
 2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key.
 3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON.
-4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform).
+4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true.
 5. **Product catalog → Offerings**: group products into an offering (the `default` offering is what paywalls show), e.g. a monthly and an annual package.
 6. Optional but recommended: design your paywall in **Paywalls**. `revenuecat.paywall()` presents it natively, priced in each user's own currency, and you can restyle it from the dashboard without an app update.
 7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL).
@@ -398,7 +400,10 @@ Using the base44-revenuecat npm package:
    (the store-localized price). Show plan.trial.days when a free trial exists.
 4. Purchase with: await revenuecat.buy(plan.id). Check result.ok and result.cancelled;
    the call resolves (never throws).
-5. Gate premium UI on: await revenuecat.has('premium')
+5. Gate premium UI on: await revenuecat.has('premium'), replacing 'premium' with an
+   entitlement id that actually exists in this project's RevenueCat dashboard
+   (Product catalog, Entitlements). Ask which id to use rather than inventing one:
+   an entitlement that was never created is false for every user, always.
 6. Add a "Restore purchases" button calling: await revenuecat.restore()
 7. On app logout call: await revenuecat.logout()
 8. Do not hardcode prices or currencies.
@@ -417,7 +422,7 @@ Using the base44-revenuecat npm package:
 ## Troubleshooting
 
 - **`products()` returns `[]` in the installed app** → the build predates the RevenueCat integration or the keys were added after the last build: check Despia → Integrations → RevenueCat, then rebuild. Also confirm your products are attached to an offering in RevenueCat.
-- **`has('premium')` is false right after buying** → entitlement not attached to the purchased product in RevenueCat (Product catalog → Entitlements).
+- **`has('premium')` is false right after buying** → in order of likelihood: (a) you copied `premium` out of these docs and no entitlement with that id exists in your RevenueCat dashboard, so it can never be true. Use your own id. (b) The entitlement exists but the purchased product is not attached to it (Product catalog → Entitlements). (c) The id differs by case or whitespace: it is matched literally, so `Premium` is not `premium`. (d) You bought a consumable or credit pack, which grants no entitlement by design. Check `result.ok` for those, not `has()`. `status()` shows the ids the device actually sees, which is the fastest way to tell these apart.
 - **Server check says false, client says true** → the ids differ. Log `revenuecat.id` in the app and `user.id` in the function. They must be identical strings.
 - **Nothing happens in the browser** → correct: purchases only exist inside the installed iOS/Android app. Preview logic with `revenuecat.native`.
 
@@ -442,6 +447,8 @@ No. Client gating works with zero backend. For protected server actions, a singl
 ### What is the difference between a product and an entitlement?
 
 A product is what the store sells (`premium_monthly`, `premium_annual`). An entitlement is what it unlocks (`premium`). Attach both your iOS and Android products to one entitlement, then gate your app on `has('premium')` and your code never branches per platform or per plan.
+
+You name the entitlement yourself when you create it in RevenueCat, and both names above are just examples. There is no standard or built-in entitlement id, so `premium` carries no special meaning to RevenueCat, to Despia, or to this package. Whatever you type in the dashboard is the exact string your code must pass.
 
 ### How do I test purchases before launch?
 
