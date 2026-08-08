@@ -23,13 +23,17 @@ export interface Product {
   periodCount: number | null
   /** Free trial / introductory pricing, when the store offers one. */
   intro: {
-    price: number
+    /** null when the build's channel reports only a display string. Render priceString. */
+    price: number | null
     priceString: string
     period: string | null
     periodUnit: 'day' | 'week' | 'month' | 'year' | null
     periodCount: number | null
-    cycles: number
+    /** null when the build does not report a cycle count. */
+    cycles: number | null
     type: 'trial' | 'intro'
+    /** The store's own payment mode, when the build reports it. Preferred over guessing from cycles. */
+    mode?: 'trial' | 'payg' | 'upfront' | null
   } | null
   /** RevenueCat offering this product came from. */
   offering: string | null

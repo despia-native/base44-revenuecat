@@ -40,14 +40,20 @@
   function runtime () {
     if (!W) return 0
     try {
-      // The module bus is the strongest signal, and it is enough on its own:
-      // the wire flag and the bus are set by the same runtime but not
-      // necessarily in the same tick, so requiring both can misread a
-      // Framework app as classic and fire scheme navigations at it.
-      if (W.dsx && W.dsx.module) return 4
+      // Order matters. The Framework installs window.__dsxWire at document
+      // start, before any page script, and locks it (non-writable,
+      // non-configurable), so it is the one marker a page cannot fake or
+      // shadow: it alone settles the question.
       if (W.__dsxWire) return 4
+      // No wire but a Despia user agent means the classic runtime, because a
+      // Framework app would always carry the wire by now. Checking this
+      // BEFORE the bus matters: window.dsx is an ordinary writable global, so
+      // a page (or another library) defining it must not be able to turn a
+      // classic app into a Framework one and silently disable every purchase.
       var ua = (W.navigator && W.navigator.userAgent || '').toLowerCase()
       if (ua.indexOf('despia') !== -1) return 3
+      // Neither: a non-native Framework surface still speaks the module bus.
+      if (W.dsx && W.dsx.module) return 4
     } catch (e) {}
     return 0
   }
@@ -178,6 +184,11 @@
   function v4bus () {
     var mod = v4()
     if (mod) return Promise.resolve(mod)
+    // The bus is already bound and RevenueCat is not on it: the module is
+    // excluded from this build, so there is nothing to wait for.
+    var bound = false
+    try { bound = !!(W && W.dsx && W.dsx.module) } catch (e) {}
+    if (bound) return Promise.resolve(null)
     var wired = false
     try { wired = !!(W && W.__dsxWire) } catch (e) {}
     if (!wired) return Promise.resolve(null)
@@ -365,14 +376,22 @@
       period: period && period.iso8601 || null,
       periodUnit: period && V3_PERIOD_UNIT[period.unit] || null,
       periodCount: period && period.value || null,
+      // This channel reports only a display string and a payment mode: no
+      // numeric price and no cycle count. Report those as unknown rather than
+      // inventing a zero price and a single cycle, and carry the mode the
+      // native side actually sent so a pay-as-you-go offer is not rendered as
+      // pay-up-front.
       intro: intro ? {
-        price: 0,
+        price: null,
         priceString: intro.priceString || '',
         period: introPeriod && introPeriod.iso8601 || null,
         periodUnit: introPeriod && V3_PERIOD_UNIT[introPeriod.unit] || null,
         periodCount: introPeriod && introPeriod.value || null,
-        cycles: 1,
-        type: intro.type === 'free_trial' ? 'trial' : 'intro'
+        cycles: null,
+        type: intro.type === 'free_trial' ? 'trial' : 'intro',
+        mode: intro.type === 'free_trial' ? 'trial'
+          : intro.type === 'pay_as_you_go' ? 'payg'
+            : intro.type === 'pay_up_front' ? 'upfront' : null
       } : null,
       offering: null,
       package: row && row.packageId || null,
@@ -389,14 +408,17 @@
       products.push(product)
       packages.push({ id: product.package || '', type: product.packageType || '', product: product })
     }
+    var empty = !err && products.length === 0
     return {
       ok: !err && products.length > 0,
       current: null,
       offerings: packages.length ? [{ id: '', current: true, packages: packages }] : [],
       products: products,
       platform: os(), runtime: 3, user: iap._user, project: iap.project,
-      error: err && err.message || null,
-      code: err && err.code || null
+      // An empty answer is still an answer: give the caller something to show
+      // and branch on rather than ok:false with nothing in it.
+      error: err && err.message || (empty ? 'No offering is available to show.' : null),
+      code: err && err.code || (empty ? 'offeringNotFoundError' : null)
     }
   }
 
@@ -494,9 +516,11 @@
       }
     } else if (intro) {
       introOut = {
-        // Heuristic until the envelope carries Apple's paymentMode natively:
-        // pay-as-you-go bills the intro price for multiple cycles, pay-up-front once.
-        type: intro.cycles > 1 ? 'payg' : 'upfront',
+        // The envelope's own payment mode wins when it carries one. Otherwise
+        // the heuristic: pay-as-you-go bills the intro price for multiple
+        // cycles, pay-up-front once.
+        type: intro.mode === 'payg' || intro.mode === 'upfront' ? intro.mode
+          : intro.cycles > 1 ? 'payg' : 'upfront',
         eligible: null,
         price: nestPrice(intro.price, intro.priceString, product.currency),
         period: nestPeriod(intro.period, intro.periodUnit, intro.periodCount),
@@ -737,12 +761,19 @@
             })
           })
           .then(function (envelope) {
-            if (offering && envelope && envelope.offerings && envelope.offerings.length) {
-              // The fallback reads ignore the filter, so apply it here.
+            // The fallback reads ignore the filter, so apply it here. It must
+            // never widen: a request for one offering that matches nothing
+            // answers not-found, exactly like the native catalog action, and
+            // never the whole catalog (which would price a user off the wrong
+            // offering). A native not-found envelope is left alone.
+            if (offering && envelope && envelope.ok !== false && envelope.offerings) {
               var kept = envelope.offerings.filter(function (o) { return o.id === offering })
-              if (kept.length && kept.length !== envelope.offerings.length) {
-                envelope.offerings = kept
-                envelope.products = kept[0].packages.map(function (p) { return p.product })
+              envelope.offerings = kept
+              envelope.products = kept.length ? kept[0].packages.map(function (p) { return p.product }) : []
+              if (!kept.length) {
+                envelope.ok = false
+                envelope.error = 'No offering found for ' + offering + '.'
+                envelope.code = 'offeringNotFoundError'
               }
             }
             return self._cache(envelope)
@@ -997,8 +1028,13 @@
           var rows = parts[1]
           var ents = parts[2]
           if (envelope) return customerStatus(envelope, rows)
-          if (ents) return entitlementsStatus(ents, rows)
+          // Prefer the entitlements read only when it actually reports
+          // something. An empty answer is a real state (a project with no
+          // entitlements mapped), but it must not outrank the device's store
+          // history, or a live subscriber reads as not entitled.
+          if (ents && ((ents.active || []).length || (ents.all || []).length)) return entitlementsStatus(ents, rows)
           if (rows) return historyStatus(rows)
+          if (ents) return entitlementsStatus(ents, rows)
           return emptyStatus('timeout', 'No response from the native layer.')
         })
       }

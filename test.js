@@ -465,6 +465,112 @@ async function testV3LegacyOfferings () {
   console.log('  v3 legacy build: products falls back to the offerings channel ✓')
 }
 
+async function testOfferingFilterNeverWidens () {
+  // Regression: on a build without `catalog`, the client-side filter used to
+  // be a no-op when it matched nothing, so asking for one offering returned
+  // the whole catalog. That renders a win-back price to a full-price user.
+  const win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      catalog: () => Promise.reject({ code: 'no_module' }),
+      offerings: () => Promise.resolve({ current: 'default', all: [
+        { id: 'default', packages: [{ id: '$rc_monthly', type: 'monthly', product: { id: 'full_9', title: 'Full', price: { amount: 9.99, formatted: '$9.99' }, subscription: { period: 'P1M', period_unit: 'month', period_count: 1 } } }] },
+        { id: 'winback', packages: [{ id: '$rc_monthly', type: 'monthly', product: { id: 'win_4', title: 'Winback', price: { amount: 4.99, formatted: '$4.99' }, subscription: { period: 'P1M', period_unit: 'month', period_count: 1 } } }] }
+      ] })
+    } } }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const missing = await iap.plans('blackfriday')
+  assert.deepStrictEqual(missing, [], 'an unknown offering returns nothing, never the whole catalog')
+  const envelope = await iap.offers('blackfriday')
+  assert.strictEqual(envelope.ok, false)
+  assert.strictEqual(envelope.code, 'offeringNotFoundError', 'and says why, like the native catalog does')
+
+  const hit = await iap.plans('winback')
+  assert.strictEqual(hit.length, 1, 'a known offering returns only its own plans')
+  assert.strictEqual(hit[0].price.text, '$4.99')
+  console.log('  offering filter: an unknown id never widens to the full catalog ✓')
+}
+
+async function testEmptyEntitlementsFallsThrough () {
+  // Regression: an empty {active:[],all:[]} is truthy, so it used to outrank
+  // the store history and a live subscriber read as not entitled.
+  const win = {
+    navigator: { userAgent: 'despia-android' }, native_os: 'android', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      customer: () => Promise.reject({ code: 'no_module' }),
+      entitlements: () => Promise.resolve({ active: [], all: [] }),
+      history: () => Promise.resolve([{ productId: 'premium_monthly', entitlementId: 'premium', isActive: true, type: 'subscription' }])
+    } } }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const status = await iap.status()
+  assert.deepStrictEqual(status.active, ['premium'], 'store history still answers when entitlements are empty')
+  assert.strictEqual(await iap.has('premium'), true, 'a live subscriber keeps access')
+  console.log('  empty entitlements: store history still answers, subscriber keeps access ✓')
+}
+
+async function testModuleExcludedFailsFast () {
+  // Regression: the bus wait gated on the wire, which every Framework surface
+  // has, so a build that simply excludes RevenueCat waited 2s per call.
+  const win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', __dsxWire: {}, localStorage: null,
+    dsx: { module: { dom: {}, app: {} } }        // bus bound, revenuecat not in this build
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const t0 = Date.now()
+  const envelope = await iap.offers()
+  const elapsed = Date.now() - t0
+  assert.strictEqual(envelope.code, 'no_module')
+  assert.ok(elapsed < 1000, 'a bound bus without the module answers immediately, took ' + elapsed + 'ms')
+  console.log('  module excluded: answers immediately instead of waiting for a bound bus ✓')
+}
+
+async function testLegacyIntroOfferFidelity () {
+  // Regression: the legacy offerings channel reports only a display string and
+  // a payment mode, so inventing price 0 / cycles 1 made every paid intro
+  // offer read as a zero-price pay-up-front.
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://offerings')) {
+          win.offeringsData = [{
+            packageId: '$rc_annual', packageType: 'ANNUAL', productId: 'premium_annual',
+            title: 'Premium Annual', priceString: '$79.99', price: 79.99, currency: 'USD',
+            period: { unit: 'year', value: 1, iso8601: 'P1Y' },
+            introOffer: { priceString: '$1.99', period: { unit: 'month', value: 1, iso8601: 'P1M' }, type: 'pay_as_you_go' }
+          }]
+          win.offeringsError = null
+          if (typeof win.onRevenueCatOfferings === 'function') win.onRevenueCatOfferings()
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const plans = await iap.plans()
+  assert.strictEqual(plans.length, 1)
+  assert.strictEqual(plans[0].intro.type, 'payg', 'the native payment mode survives, not a cycles guess')
+  assert.strictEqual(plans[0].intro.price.text, '$1.99', 'the display string is the truth')
+  const products = await iap.products()
+  assert.strictEqual(products[0].intro.price, null, 'no numeric price is invented')
+  assert.strictEqual(products[0].intro.cycles, null, 'no cycle count is invented')
+  console.log('  legacy intro offer: mode preserved, nothing invented ✓')
+}
+
 async function testBusArrivesLate () {
   // The Framework locks window.__dsxWire at document start and binds the
   // window.dsx bus a moment later. A call made in that gap must wait for the
@@ -511,19 +617,29 @@ async function testRuntimeDetection () {
   // The module bus alone is enough to mean Framework: the wire flag and the
   // bus are not guaranteed to appear in the same tick, and misreading a
   // Framework app as classic would fire scheme navigations at it.
-  const busOnly = {
+  // A Despia app with a page-defined window.dsx but NO wire is the classic
+  // runtime: the Framework installs the wire at document start and locks it,
+  // so its absence is decisive. Trusting the writable global here would
+  // silently disable every purchase on a classic build.
+  const spoofed = {
     navigator: { userAgent: 'despia-iphone' },
     dsx: { module: { revenuecat: {} } },
     localStorage: null
   }
-  global.window = busOnly
-  global.self = busOnly
-  assert.strictEqual(freshRequire().runtime, 4, 'bus without the wire flag is still Framework')
+  global.window = spoofed
+  global.self = spoofed
+  assert.strictEqual(freshRequire().runtime, 3, 'a page-defined dsx cannot turn a classic app into a Framework one')
+
+  // Off-device, with no Despia user agent, the bus is the only signal there is.
+  const webBus = { navigator: { userAgent: 'Mozilla/5.0' }, dsx: { module: { revenuecat: {} } }, localStorage: null }
+  global.window = webBus
+  global.self = webBus
+  assert.strictEqual(freshRequire().runtime, 4, 'a non-native Framework surface still speaks the bus')
 
   const wireOnly = { navigator: { userAgent: 'despia-android' }, __dsxWire: {}, localStorage: null }
   global.window = wireOnly
   global.self = wireOnly
-  assert.strictEqual(freshRequire().runtime, 4, 'wire flag without the bus is still Framework')
+  assert.strictEqual(freshRequire().runtime, 4, 'the locked wire alone is decisive')
 
   const classic = { navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' }, localStorage: null }
   global.window = classic
@@ -853,6 +969,10 @@ async function testV4LegacyRetry () {
   await testV4LegacyRetry()
   await testV4LegacyActions()
   await testV3LegacyOfferings()
+  await testOfferingFilterNeverWidens()
+  await testEmptyEntitlementsFallsThrough()
+  await testModuleExcludedFailsFast()
+  await testLegacyIntroOfferFidelity()
   await testBusArrivesLate()
   await testRuntimeDetection()
   await testDestructured()
