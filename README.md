@@ -2,6 +2,15 @@
 
 **Sell real App Store and Google Play subscriptions from your Base44 app.** This package connects a Base44 app, published as a native iOS and Android app with [Despia](https://despia.com), to Apple StoreKit and Google Play Billing through the RevenueCat SDK that Despia compiles into your binary. Query products with live store pricing, launch native paywalls, run purchases, check entitlements, and verify subscribers server-side in Base44 backend functions. Promise-based, three-letter-simple, zero native code, zero webhooks.
 
+[![npm version](https://img.shields.io/npm/v/base44-revenuecat.svg)](https://www.npmjs.com/package/base44-revenuecat)
+[![npm downloads](https://img.shields.io/npm/dm/base44-revenuecat.svg)](https://www.npmjs.com/package/base44-revenuecat)
+[![types included](https://img.shields.io/npm/types/base44-revenuecat.svg)](./index.d.ts)
+[![license](https://img.shields.io/npm/l/base44-revenuecat.svg)](./LICENSE)
+
+For Base44 makers shipping a real iOS and Android app: monthly and annual subscriptions,
+one-time unlocks, consumable credits, free trials and introductory offers, all billed by
+Apple and Google so your app passes review.
+
 ```bash
 npm install base44-revenuecat
 ```
@@ -401,19 +410,40 @@ Using the base44-revenuecat npm package:
 
 ## FAQ
 
-**Can a Base44 app have in-app purchases?**
+### Can a Base44 app have in-app purchases?
+
 Yes. Publish your Base44 app as a native iOS and Android app with [Despia](https://despia.com), enable the RevenueCat integration, and this package gives you App Store and Google Play subscriptions with a promise-based JavaScript API, with no Swift, no Kotlin, no webhooks.
 
-**How do I put my Base44 app on the App Store and Google Play?**
+### How do I put my Base44 app on the App Store and Google Play?
+
 Despia wraps your Base44 app in a real native binary and walks you through store submission. See [despia.com](https://despia.com) and the [setup guides](https://setup.despia.com).
 
-**Do I need my own backend for subscriptions?**
-No. Client gating works with zero backend. For protected server actions, a single Base44 backend function with `entitled()` is enough. RevenueCat is the source of truth, you never mirror it.
+### Can I use Stripe for subscriptions inside a Base44 mobile app?
 
-**Does Apple/Google allow Stripe or card payments for digital goods?**
-For digital content and features inside the app, the stores require their own billing (StoreKit / Play Billing), which is exactly what this package uses, so your app passes review.
+Not for digital content and features used inside the app. Apple and Google require their own billing there, and a Stripe checkout in a web view is one of the most common causes of rejection. This package uses StoreKit and Play Billing, which is the compliant path. Stripe remains the right tool for physical goods, real-world services, and your web checkout.
 
-**What does RevenueCat cost?**
+### Do I need my own backend for subscriptions?
+
+No. Client gating works with zero backend. For protected server actions, a single Base44 backend function with `entitled()` is enough. RevenueCat is the source of truth, you never mirror it into your own tables.
+
+### What is the difference between a product and an entitlement?
+
+A product is what the store sells (`premium_monthly`, `premium_annual`). An entitlement is what it unlocks (`premium`). Attach both your iOS and Android products to one entitlement, then gate your app on `has('premium')` and your code never branches per platform or per plan.
+
+### How do I test purchases before launch?
+
+On iOS use a Sandbox Apple ID through TestFlight, where a month renews in about five minutes. On Android add yourself as a license tester in Play Console and install from an Internal Testing track. Sandbox purchases are free and appear in the RevenueCat dashboard within seconds.
+
+### Why does `products()` come back empty?
+
+Almost always one of three things: the app was built before the RevenueCat keys were added in Despia (rebuild), the products are not attached to an offering in RevenueCat, or the store products are not yet approved. See [Troubleshooting](#troubleshooting).
+
+### Does this work with other AI app builders?
+
+The package targets Base44 conventions, but the native layer underneath is Despia, which turns any web app into an iOS and Android binary. If you build with a different tool, the same RevenueCat integration is available through [despia-native](https://www.npmjs.com/package/despia-native).
+
+### What does RevenueCat cost?
+
 Free until well past your first revenue (see [revenuecat.com/pricing](https://www.revenuecat.com/pricing)); no card needed to start.
 
 ---
