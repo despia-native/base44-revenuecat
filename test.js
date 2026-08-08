@@ -51,6 +51,8 @@ async function testWeb () {
   assert.strictEqual(iap.os, 'web')
   assert.strictEqual(iap.runtime, 0)
   assert.deepStrictEqual(await iap.products(), [])
+  const who = await iap.user()
+  assert.deepStrictEqual(who, { id: null, user: null, anonymous: true, registered: false })
   const buy = await iap.buy('x')
   assert.strictEqual(buy.ok, false)
   assert.strictEqual(buy.code, 'web')
@@ -158,6 +160,14 @@ async function testV3 () {
   const paywall = await iap.paywall()
   assert.strictEqual(paywall.cancelled, true)
 
+  // Identity read on a build without bridge >= 2: NEVER fire the whoami
+  // scheme (old catch-alls treat unknown actions as purchases), answer from
+  // local state instead.
+  const who = await iap.user()
+  assert.strictEqual(who.user, 'u1')
+  assert.strictEqual(who.registered, true)
+  assert.ok(!fired.some((c) => c.startsWith('revenuecat://whoami')), 'whoami never fired without bridge proof')
+
   const t0 = Date.now()
   const restore = await iap.restore()
   assert.ok(Date.now() - t0 < 5000, 'empty history resolves promptly, not on timeout')
@@ -223,6 +233,107 @@ async function testV3OldBuild () {
   assert.strictEqual(info.entitlements.premium.active, true)
   assert.strictEqual(info.entitlements.premium.product, 'p1')
   console.log('  v3 old build: entitlements fall back to store history ✓')
+}
+
+async function testV3Bridge2 () {
+  // A V3 build with bridge >= 2: whoami answers on the user channel, and
+  // purchases/paywalls with nobody logged in ride RevenueCat's own anonymous
+  // user instead of a synthesized id.
+  const fired = []
+  const win = {
+    navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' },
+    localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } }
+  }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win.revenueCatProducts = Object.assign({}, envelope(3), { bridge: 2, user: '$RCAnonymousID:abc123', anonymous: true })
+          if (typeof win.onRevenueCatProducts === 'function') win.onRevenueCatProducts(win.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://whoami')) {
+          win.revenueCatUser = Object.assign({}, envelope(3), {
+            bridge: 2, user: '$RCAnonymousID:abc123', anonymous: true, registered: false,
+            new: false, entitlements: { active: [], all: [] }
+          })
+          if (typeof win.onRevenueCatUser === 'function') win.onRevenueCatUser(win.revenueCatUser)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          assert.ok(!cmd.includes('external_id='), 'anonymous purchase on bridge 2 carries NO external_id')
+          win.revenueCatResult = {
+            ok: true, cancelled: false, restored: false, source: 'purchase',
+            product: 'premium:monthly', transaction: 'GPA.2', entitlements: ['premium'],
+            user: '$RCAnonymousID:abc123', platform: 'ios', runtime: 3, bridge: 2, error: null, code: null
+          }
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+        } else if (cmd.startsWith('revenuecat://launchPaywall')) {
+          assert.ok(!cmd.includes('external_id='), 'anonymous paywall on bridge 2 carries NO external_id')
+          win.revenueCatResult = {
+            ok: false, cancelled: true, restored: false, source: 'paywall',
+            product: null, transaction: null, entitlements: [],
+            user: '$RCAnonymousID:abc123', platform: 'ios', runtime: 3, bridge: 2, error: null, code: null
+          }
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  // Learn the capability from the first envelope, then read identity natively.
+  await iap.products()
+  const who = await iap.user()
+  assert.strictEqual(who.id, '$RCAnonymousID:abc123', 'raw RevenueCat anonymous id surfaces')
+  assert.strictEqual(who.user, null)
+  assert.strictEqual(who.anonymous, true)
+  assert.strictEqual(who.registered, false)
+  assert.ok(fired.some((c) => c === 'revenuecat://whoami'), 'whoami fired once bridge 2 proven')
+
+  // Anonymous purchase + paywall: the interceptor asserts no external_id.
+  const buy = await iap.buy('monthly')
+  assert.strictEqual(buy.ok, true)
+  const paywall = await iap.paywall()
+  assert.strictEqual(paywall.cancelled, true)
+  assert.ok(!('b44rc_anon' in win.localStorage._s), 'no synthesized id was minted on a bridge 2 build')
+  console.log('  v3 bridge 2: native whoami + RevenueCat-anonymous purchases ✓')
+}
+
+async function testV3LegacyAnon () {
+  // A proven V3 build WITHOUT bridge 2 and nobody logged in: purchases keep
+  // the synthesized stable id (those builds hard-require external_id).
+  const win = {
+    navigator: { userAgent: 'despia-android' },
+    localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } }
+  }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win.revenueCatProducts = envelope(3)   // no bridge field: legacy
+          if (typeof win.onRevenueCatProducts === 'function') win.onRevenueCatProducts(win.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          assert.ok(/external_id=b44_/.test(cmd), 'legacy build purchase falls back to the synthesized id')
+          win.revenueCatResult = {
+            ok: true, cancelled: false, restored: false, source: 'purchase',
+            product: 'premium:monthly', transaction: 'GPA.3', entitlements: ['premium'],
+            user: 'b44_x', platform: 'android', runtime: 3, error: null, code: null
+          }
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  await iap.products()                       // proves the build, no bridge stamp
+  const buy = await iap.buy('monthly')
+  assert.strictEqual(buy.ok, true)
+  assert.ok('b44rc_anon' in win.localStorage._s, 'synthesized id persisted for stable attribution')
+  console.log('  v3 legacy build: anonymous purchases keep the synthesized id ✓')
 }
 
 async function testDestructured () {
@@ -404,13 +515,141 @@ async function testV4OldBuild () {
   console.log('  v4 old build: catalog falls back to the products action ✓')
 }
 
+async function testV4Identity () {
+  // Identity on a current V4 build: user() asks the native whoami action,
+  // anonymous purchases carry no external_id, and an identity the SDK
+  // persisted across restarts is adopted.
+  const calls = []
+  let logged = null
+  const mod = {
+    whoami: (args) => {
+      calls.push(['whoami', args])
+      return Promise.resolve(logged
+        ? { app_user_id: logged, is_anonymous: false }
+        : { app_user_id: '$RCAnonymousID:xyz', is_anonymous: true })
+    },
+    login: (args) => {
+      calls.push(['login', args])
+      logged = args.external_id
+      return Promise.resolve({ ok: true, user: logged, anonymous: false, new: true })
+    },
+    purchase: (args) => {
+      calls.push(['purchase', args])
+      return Promise.resolve({
+        status: 'purchased', product_id: 'coins_100', plan_id: '',
+        active_entitlements: [], transaction: { id: 't2' }, customer_info: {}
+      })
+    }
+  }
+  const win = {
+    navigator: { userAgent: 'despia-iphone' },
+    native_os: 'ios',
+    __dsxWire: { bound: true },
+    dsx: { module: { revenuecat: mod } },
+    localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  // Nobody logged in: the raw anonymous id surfaces, registered says no.
+  const anon = await iap.user()
+  assert.strictEqual(anon.id, '$RCAnonymousID:xyz')
+  assert.strictEqual(anon.user, null)
+  assert.strictEqual(anon.registered, false)
+  assert.strictEqual(iap.id, null)
+
+  // Anonymous purchase: no external_id in the native args.
+  const buy = await iap.buy('coins_100.pack')
+  assert.strictEqual(buy.ok, true)
+  const anonBuy = calls.find((c) => c[0] === 'purchase')
+  assert.ok(anonBuy && !('external_id' in anonBuy[1]), 'anonymous V4 purchase omits external_id')
+  assert.ok(!('b44rc_anon' in win.localStorage._s), 'no synthesized id on a current V4 build')
+
+  // Login, then the identity read reports the registered user.
+  await iap.user('u7')
+  await new Promise((r) => setTimeout(r, 50))   // fire-and-forget login probe
+  const me = await iap.user()
+  assert.strictEqual(me.user, 'u7')
+  assert.strictEqual(me.registered, true)
+
+  // A login the native SDK persisted across restarts is adopted locally.
+  const iap2 = freshRequire()
+  assert.strictEqual(iap2.id, null)
+  const persisted = await iap2.user()
+  assert.strictEqual(persisted.user, 'u7')
+  assert.strictEqual(persisted.registered, true)
+  assert.strictEqual(iap2.id, 'u7', 'persisted native login adopted')
+  console.log('  v4 identity: whoami read + anonymous purchase + adoption ✓')
+}
+
+async function testV4LegacyRetry () {
+  // An old V4 build that still hard-requires external_id: the first
+  // anonymous attempt rejects missing_param, the package retries once the
+  // legacy way with a synthesized id, and the call still succeeds.
+  const purchaseArgs = []
+  const paywallArgs = []
+  const win = {
+    navigator: { userAgent: 'despia-android' },
+    native_os: 'android',
+    __dsxWire: { bound: true },
+    localStorage: { _s: {}, getItem (k) { return this._s[k] || null }, setItem (k, v) { this._s[k] = v } },
+    dsx: {
+      module: {
+        revenuecat: {
+          purchase: (args) => {
+            purchaseArgs.push(args)
+            if (!args.external_id) return Promise.reject({ code: 'missing_param', message: 'Missing required parameter: external_id.' })
+            return Promise.resolve({
+              status: 'purchased', product_id: 'coins_100', plan_id: '',
+              active_entitlements: [], transaction: { id: 't3' }, customer_info: {}
+            })
+          },
+          paywall: (args) => {
+            paywallArgs.push(args)
+            if (!args.external_id) return Promise.reject({ code: 'missing_param', message: 'Missing required parameter: external_id.' })
+            setTimeout(() => {
+              win.revenueCatResult = {
+                ok: true, cancelled: false, restored: false, source: 'paywall', product: 'premium:monthly',
+                transaction: 't4', entitlements: ['premium'], user: args.external_id,
+                platform: 'android', runtime: 4, error: null, code: null
+              }
+              if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(win.revenueCatResult)
+            }, 30)
+            return Promise.resolve({ status: 'presented', offering: 'default' })
+          }
+        }
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const buy = await iap.buy('coins_100.pack')
+  assert.strictEqual(buy.ok, true, 'purchase succeeds after the legacy retry')
+  assert.strictEqual(purchaseArgs.length, 2)
+  assert.ok(!purchaseArgs[0].external_id, 'first attempt is anonymous')
+  assert.ok(/^b44_/.test(purchaseArgs[1].external_id), 'retry carries the synthesized id')
+
+  const paywall = await iap.paywall()
+  assert.strictEqual(paywall.ok, true, 'paywall succeeds after the legacy retry')
+  assert.strictEqual(paywallArgs.length, 2)
+  assert.ok(/^b44_/.test(paywallArgs[1].external_id), 'paywall retry carries the synthesized id')
+  console.log('  v4 legacy build: missing_param triggers one synthesized-id retry ✓')
+}
+
 ;(async () => {
   console.log('base44-revenuecat smoke tests')
   await testWeb()
   await testV3()
   await testV3OldBuild()
+  await testV3Bridge2()
+  await testV3LegacyAnon()
   await testV4()
   await testV4OldBuild()
+  await testV4Identity()
+  await testV4LegacyRetry()
   await testDestructured()
   await testRedeemStub()
   await testServer()

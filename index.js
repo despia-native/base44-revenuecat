@@ -216,6 +216,10 @@
   function keepProject (envelope) {
     try {
       if (envelope && envelope.project && !iap.project) iap.project = envelope.project
+      // Capability facts ride every envelope (any runtime): `bridge` is the
+      // native bridge version, 2 = whoami identity read + purchases/paywalls
+      // that fall back to RevenueCat's own anonymous user.
+      if (envelope && envelope.bridge > iap._bridge) iap._bridge = envelope.bridge
       // An envelope with runtime:3 proves this V3 build carries the unified
       // bridge, safe to use the identity session schemes from here on.
       if (envelope && envelope.runtime === 3) {
@@ -428,17 +432,52 @@
       })
     },
 
+    // Normalize a native identity report into the shape user() resolves:
+    // { id, user, anonymous, registered }. `id` is the raw RevenueCat app
+    // user id (anonymous "$RCAnonymousID:..." ids included), `user` is the id
+    // you bound (null when anonymous). An id the app set locally this session
+    // always wins; a login the native SDK persisted across restarts is
+    // adopted so purchases and server checks keep naming the same customer.
+    _identity: function (raw, anon) {
+      var self = this
+      var id = raw == null || raw === '' ? null : String(raw)
+      if (id && anon === false && !self._user) self._user = id
+      var user = self._user || (anon === false ? id : null)
+      return { id: id || user, user: user, anonymous: !user, registered: !!user }
+    },
+
     // Identify the current user to RevenueCat, the everyday call:
     //   await revenuecat.user(base44User.id)
     // Use your Base44 user's stable id (not an email) so client purchases and
     // your server-side checks always name the same RevenueCat customer.
     // Switching accounts is just another user(newId), no logout in between
     // (RevenueCat supports logIn() straight from another identified user).
-    // With no argument, resolves the current identity.
+    // With no argument, resolves the current identity, asking the native
+    // RevenueCat SDK who it thinks the user is (registered or anonymous) on
+    // builds that support the read, falling back to local state elsewhere.
     user: function (id) {
       var self = this
       if (arguments.length === 0 || id === undefined) {
-        return Promise.resolve({ user: self._user, anonymous: !self._user })
+        var rt = runtime()
+        if (rt === 4) {
+          return v4call('whoami', {}, 8000).then(function (d) {
+            return self._identity(d && d.app_user_id, !!(d && d.is_anonymous))
+          }).catch(function () { return self._identity(null, void 0) })
+        }
+        if (rt === 3 && self._bridge >= 2) {
+          // Only fire the scheme once an envelope has stamped bridge >= 2:
+          // older builds route unknown revenuecat:// actions into the
+          // purchase catch-all, which must never happen for a read.
+          return chained('user', function () {
+            fire('revenuecat://whoami')
+            return awaitChannel('revenueCatUser', 'onRevenueCatUser', 8000)
+          }).then(function (envelope) {
+            if (!envelope) return self._identity(null, void 0)
+            keepProject(envelope)
+            return self._identity(envelope.user, envelope.anonymous !== false)
+          })
+        }
+        return Promise.resolve(self._identity(null, void 0))
       }
       self._user = id == null || id === '' ? null : String(id)
       self._v3bound = false
@@ -453,7 +492,7 @@
       if (self._user && runtime() === 3) {
         v3bind()   // fires only once a unified envelope has proven the build
       }
-      return Promise.resolve({ user: self._user, anonymous: !self._user })
+      return Promise.resolve({ id: self._user, user: self._user, anonymous: !self._user, registered: !!self._user })
     },
 
     // Alias of user(id).
@@ -479,12 +518,18 @@
       if (runtime() === 3 && this._v3) {
         fire('revenuecat://logout')   // build proven, rotate the native user too
       }
-      return Promise.resolve({ user: null, anonymous: true })
+      return Promise.resolve({ id: null, user: null, anonymous: true, registered: false })
     },
 
     // V3 capability facts, learned from envelopes (see keepProject/v3bind).
     _v3: false,
     _v3bound: false,
+
+    // Native bridge capability version, learned from any envelope on any
+    // runtime: 2 = whoami identity read + anonymous purchase fallback.
+    // 0 = unknown or an older build (the package then synthesizes an id for
+    // purchases, since those builds require external_id).
+    _bridge: 0,
 
     // All products across your RevenueCat offerings, with live store pricing
     // (localized price string, currency, period, free-trial/intro phases) in
@@ -595,9 +640,21 @@
       if (rt === 0) return Promise.resolve(webResult('purchase'))
       return this._resolve(product).then(function (productId) {
         if (rt === 4) {
-          var args = { external_id: self._user || self._anon(), product: productId }
+          // No id bound: buy as the current (possibly anonymous) RevenueCat
+          // user, its own best practice. Old builds that still require
+          // external_id reject with missing_param (product is always sent, so
+          // that can only mean the id): retry once the legacy way with a
+          // synthesized anonymous id.
+          var args = { product: productId }
+          if (self._user) args.external_id = self._user
           if (offer) args.offer = offer
           return v4call('purchase', args, 600000)
+            .catch(function (err) {
+              if (self._user || !err || err.code !== 'missing_param') throw err
+              var legacy = { external_id: self._anon(), product: productId }
+              if (offer) legacy.offer = offer
+              return v4call('purchase', legacy, 600000)
+            })
             .then(function (data) {
               return {
                 ok: true, cancelled: false, restored: false, source: 'purchase',
@@ -610,10 +667,15 @@
             .catch(function (err) { return rejection(err, 'purchase') })
         }
         return chained('result', function () {
-          var cmd = 'revenuecat://purchase?external_id=' + encodeURIComponent(self._user || self._anon()) +
-               '&product=' + encodeURIComponent(productId)
-          if (offer) cmd += '&offer=' + encodeURIComponent(offer)
-          fire(cmd)
+          // Same ladder on V3: a bound id always rides along; with none, a
+          // bridge >= 2 build buys as RevenueCat's own anonymous user, while
+          // older builds (which require external_id) get the synthesized id.
+          var parts = []
+          var ext = self._user || (self._bridge >= 2 ? null : self._anon())
+          if (ext) parts.push('external_id=' + encodeURIComponent(ext))
+          parts.push('product=' + encodeURIComponent(productId))
+          if (offer) parts.push('offer=' + encodeURIComponent(offer))
+          fire('revenuecat://purchase?' + parts.join('&'))
           return awaitChannel('revenueCatResult', 'onRevenueCatResult', 600000, function (r) {
             return r && r.source === 'purchase'
           })
@@ -650,13 +712,26 @@
           if (rt === 4) {
             // The V4 action settles at presentation; only a rejection (paywall
             // never shown) ends the wait early, the outcome rides the shared
-            // result channel exactly like V3.
-            v4call('paywall', { external_id: self._user || self._anon(), offering: offering }, 20000)
+            // result channel exactly like V3. No id bound: present for the
+            // current (possibly anonymous) RevenueCat user; old builds that
+            // still require external_id reject with missing_param, retried
+            // once the legacy way with a synthesized id.
+            var args = { offering: offering }
+            if (self._user) args.external_id = self._user
+            v4call('paywall', args, 20000)
+              .catch(function (err) {
+                if (!self._user && err && err.code === 'missing_param') {
+                  return v4call('paywall', { external_id: self._anon(), offering: offering }, 20000)
+                }
+                throw err
+              })
               .catch(function (err) { settle(rejection(err, 'paywall')) })
           } else {
-            var cmd = 'revenuecat://launchPaywall?external_id=' + encodeURIComponent(self._user || self._anon())
-            if (offering) cmd += '&offering=' + encodeURIComponent(offering)
-            fire(cmd)
+            var parts = []
+            var ext = self._user || (self._bridge >= 2 ? null : self._anon())
+            if (ext) parts.push('external_id=' + encodeURIComponent(ext))
+            if (offering) parts.push('offering=' + encodeURIComponent(offering))
+            fire('revenuecat://launchPaywall' + (parts.length ? '?' + parts.join('&') : ''))
           }
         })
       })

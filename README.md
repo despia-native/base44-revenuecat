@@ -84,7 +84,19 @@ const me = await base44.auth.me()
 await revenuecat.user(me.id)
 ```
 
-Call it once when your app knows who the user is (after Base44 auth), before showing a paywall. Use the stable id, not an email, name, or phone number. Before `user()`, purchases run under a stable per-device anonymous id and RevenueCat merges that history on first identify. (`revenuecat.login(id)` is an alias.)
+Call it once when your app knows who the user is (after Base44 auth), before showing a paywall. Use the stable id, not an email, name, or phone number. Before `user()`, purchases run under RevenueCat's own anonymous user (exactly how RevenueCat recommends it) and the anonymous history merges on first identify. (`revenuecat.login(id)` is an alias.)
+
+**Who is logged in right now?** Call `user()` with no arguments. On current builds it asks the native RevenueCat SDK directly, so it works even before your code binds anyone:
+
+```javascript
+const who = await revenuecat.user()
+// { id: '$RCAnonymousID:abc...',  user: null,  anonymous: true,  registered: false }
+// { id: 'base44_user_42',         user: 'base44_user_42', anonymous: false, registered: true }
+
+if (!who.registered) await revenuecat.user(me.id)   // bind the account once
+```
+
+`id` is always the real RevenueCat app user id (anonymous ids included), `user` is the account id you bound (null when anonymous), and `registered` answers "is this RevenueCat user logged in?" in one boolean. A login the native SDK remembered from a previous session is picked up automatically.
 
 **Switching accounts** is just another `user(newId)`, with no logout in between; RevenueCat supports identifying straight from one user to the next:
 
@@ -190,6 +202,8 @@ if (result.ok) {
 
 Resolves when the store sheet settles: success, user-cancel, or failure. Never rejects.
 
+Purchases also work **before** anyone logs in: with no `user(id)` bound, the purchase attaches to RevenueCat's anonymous user for the device (the store still owns the receipt), and calling `user(id)` later merges that history onto the account. That is RevenueCat's recommended flow for apps where the paywall can appear before signup.
+
 ### Free trials, introductory offers & discounts
 
 Configure trials and intro pricing where they belong, App Store Connect / Google Play Console + RevenueCat, and they need **zero code**:
@@ -280,7 +294,7 @@ await revenuecat.center()   // native manage / restore / cancel / refund UI, res
 const off = revenuecat.on('result', (r) => refresh())     // every purchase/paywall outcome
 revenuecat.on('purchase', () => refresh())                // store confirmed a transaction / renewals
 revenuecat.on('center', (e) => console.log(e.event))      // Customer Center activity
-revenuecat.on('user', (u) => refresh())                   // identity changed (login/logout settled)
+revenuecat.on('user', (u) => refresh())                   // identity reported (login/logout/whoami settled)
 off()                                              // unsubscribe
 ```
 
@@ -370,7 +384,7 @@ The package detects the runtime at call time and speaks its native dialect. Same
 | Despia classic (V3) | `despia` user agent | `revenuecat://` schemes + window callbacks |
 | Browser / Base44 preview | neither | safe no-op resolutions |
 
-On older Despia builds that predate the products/customer bridge, `products()`/`plans()` resolve `[]` and `has()` falls back to the device's purchase history, rebuild your app in Despia to get the full catalog API. Newer capabilities (native session login/logout, explicit offers, offer-code redemption) are probed the same way, so the package upgrades itself as builds roll out, you never version-match JavaScript against binaries.
+On older Despia builds that predate the products/customer bridge, `products()`/`plans()` resolve `[]` and `has()` falls back to the device's purchase history, rebuild your app in Despia to get the full catalog API. Newer capabilities (native session login/logout, the `user()` identity read, RevenueCat-anonymous purchases, explicit offers, offer-code redemption) are probed the same way, so the package upgrades itself as builds roll out, you never version-match JavaScript against binaries. On builds that predate the anonymous fallback, the package quietly supplies a stable per-device id for purchases, so nothing breaks either way.
 
 ## Prompt for AI builders
 

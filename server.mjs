@@ -1,4 +1,4 @@
-// ESM entry for base44-revenuecat/server — see server.cjs for the implementation.
+// ESM entry for base44-revenuecat/server, see server.cjs for the implementation.
 import server from './server.cjs'
 
 export const entitled = server.entitled

@@ -112,11 +112,24 @@ export interface Catalog {
   platform: 'ios' | 'android' | 'web'
   /** 4 = Despia Framework, 3 = classic Despia runtime, 0 = browser. */
   runtime: number
+  /** Native bridge capability version: 2 = whoami identity read + anonymous purchase fallback. Absent on older builds. */
+  bridge?: number
   user?: string | null
   /** RevenueCat project id when configured in Despia > Integrations. */
   project?: string | null
   error: string | null
   code: string | null
+}
+
+/** The current RevenueCat identity, resolved by user() / login() / logout(). */
+export interface Identity {
+  /** The raw RevenueCat app user id, anonymous "$RCAnonymousID:..." ids included. Null only when unknown (plain browser / older build with nobody bound). */
+  id: string | null
+  /** The account id you bound with user(id), or one the native SDK persisted from a previous session. Null when anonymous. */
+  user: string | null
+  anonymous: boolean
+  /** true when a real account id is bound, the direct "is this RevenueCat user registered/logged in?" check. */
+  registered: boolean
 }
 
 /** Outcome of buy() / paywall(), resolves, never rejects. */
@@ -236,14 +249,16 @@ export interface RevenueCat {
    * Identify the user to RevenueCat, use your Base44 user's stable id so
    * client purchases and server checks always name the same customer.
    * Switching accounts is just another user(newId). No argument resolves the
-   * current identity.
+   * current identity, read from the native RevenueCat SDK on builds that
+   * support it: `id` is always the real RevenueCat app user id (anonymous ids
+   * included) and `registered` answers "is this user logged in?" directly.
    */
-  user(id: string): Promise<{ user: string | null, anonymous: boolean }>
-  user(): Promise<{ user: string | null, anonymous: boolean }>
+  user(id: string): Promise<Identity>
+  user(): Promise<Identity>
   /** Alias of user(id). */
-  login(id: string): Promise<{ user: string | null, anonymous: boolean }>
+  login(id: string): Promise<Identity>
   /** Clear identity (also rotates to a fresh anonymous RevenueCat user on newer builds, fire-and-forget). */
-  logout(): Promise<{ user: null, anonymous: true }>
+  logout(): Promise<Identity & { user: null, anonymous: true, registered: false }>
 
   /** Subscription plans shaped for a paywall screen, with live store pricing. */
   plans(offering?: string): Promise<Plan[]>
@@ -274,7 +289,7 @@ export interface RevenueCat {
   on(event: 'result', fn: (result: Result) => void): () => void
   on(event: 'purchase', fn: (customerInfo: unknown) => void): () => void
   on(event: 'center', fn: (event: { event: string, [key: string]: unknown }) => void): () => void
-  on(event: 'user', fn: (env: { ok: boolean, user: string | null, anonymous: boolean, new?: boolean, entitlements?: { active: string[], all: string[] }, [key: string]: unknown }) => void): () => void
+  on(event: 'user', fn: (env: { ok: boolean, user: string | null, anonymous: boolean, registered?: boolean, bridge?: number, new?: boolean, entitlements?: { active: string[], all: string[] }, [key: string]: unknown }) => void): () => void
   off(event: 'result' | 'purchase' | 'center' | 'user', fn?: (...args: never[]) => void): void
 }
 

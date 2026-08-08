@@ -22,6 +22,7 @@ if (await revenuecat.has('premium')) showPremium()
 | Method | Status | Notes |
 |---|---|---|
 | `user(id)` | **LIVE**: per-call identity + native session bind on current builds | primary name; `login(id)` kept as alias |
+| `user()` | **LIVE**: native identity read on current builds, local echo elsewhere | resolves `{ id, user, anonymous, registered }`, see §3 |
 | `logout()` | **LIVE**: native `logOut()` on current builds, local clear everywhere | see §3 |
 | `plans(offering?)` | **LIVE** | nested plan shape derived from the unified catalog envelope |
 | `products(ids?)` / `offers(offering?)` | **LIVE** | flat unified products / full envelope |
@@ -80,16 +81,37 @@ correct: RevenueCat explicitly supports `logIn(newId)` directly from another ide
 |---|---|---|
 | V3 iOS/Android | `revenuecat://login?external_id=X` | `window.revenueCatUser` + `onRevenueCatUser(env)` |
 | V3 iOS/Android | `revenuecat://logout` | same |
+| V3 iOS/Android | `revenuecat://whoami` (read-only, no logIn) | same |
 | V4 module | `login({external_id})` / `logout()` action | resolves the same envelope (+ mirrors the window channel) |
+| V4 module | `whoami()` action | resolves detailed customer info + mirrors the same envelope |
 
-Envelope: `{ ok, user, anonymous, new, entitlements:{active,all}, platform, runtime, error, code }`
-(`new` = RevenueCat `created`). Native `login` merges anonymous history at sign-in; native
-`logout` calls `Purchases.logOut()`, rotating to a fresh anonymous user so a shared device
-never shows the previous account's entitlements (an already-anonymous logout resolves as
-success, that state IS the goal). Rollout mechanics in the package (LIVE): on V4 the probe
-is fire-and-forget (older modules ignore it); on V3 the schemes fire only after an envelope
-has **proven** the build carries the bridge, the deferred bind, so old binaries never see a
-stray prompt. **No package update is needed as builds roll out.**
+Envelope: `{ ok, user, anonymous, registered, new, entitlements:{active,all}, platform, runtime,
+bridge, error, code }` (`new` = RevenueCat `created`; `registered` = `!anonymous`; `user` is the
+raw RC app user id, anonymous `$RCAnonymousID:` ids included). Native `login` merges anonymous
+history at sign-in; native `logout` calls `Purchases.logOut()`, rotating to a fresh anonymous
+user so a shared device never shows the previous account's entitlements (an already-anonymous
+logout resolves as success, that state IS the goal). Rollout mechanics in the package (LIVE):
+on V4 the probe is fire-and-forget (older modules ignore it); on V3 the schemes fire only after
+an envelope has **proven** the build carries the bridge, the deferred bind, so old binaries
+never see a stray prompt. **No package update is needed as builds roll out.**
+
+**The capability stamp + RC-anonymous purchases (SHIPPED, all three runtimes):** every
+envelope now carries `bridge: 2`, meaning the build supports (a) the `whoami` identity read
+and (b) purchases/paywalls **without** `external_id`, which then attach to RevenueCat's own
+current (possibly anonymous) user, RC's anonymous-first best practice, merged later by
+`login`. Package ladder when nobody is bound:
+
+| Build | `buy()` / `paywall()` identity |
+|---|---|
+| V4 current | no `external_id`; a `missing_param` rejection (old module) triggers ONE legacy retry with the synthesized `b44_` id |
+| V3 `bridge >= 2` | no `external_id` |
+| V3 proven, no stamp | synthesized stable `b44_` id (those builds hard-require it) |
+| unproven V3 / browser | synthesized id / safe no-op (unchanged) |
+
+`user()` with no argument reads identity natively (V4 `whoami` action; V3 `whoami` scheme,
+gated on `bridge >= 2` because old catch-alls treat unknown actions as purchases) and
+resolves `{ id, user, anonymous, registered }`; a registered id the SDK persisted across
+restarts is adopted into the package state so later calls keep naming the same customer.
 
 Interim guidance (README, LIVE): apps with accounts gate on both:
 `const premium = user && await revenuecat.has('premium')`, which is correct on every build
@@ -211,15 +233,17 @@ LIVE today, one JSON on all runtimes (`runtime: 3|4` distinguishes):
 | Customer/entitlements | `revenuecat://customer` → `revenueCatCustomer` + `onRevenueCatCustomer` | `customer` (resolves + mirrors) |
 | Purchase / paywall outcomes | `revenueCatResult` + `onRevenueCatResult`, exactly one per attempt/presentation (purchased·restored·cancelled·error) | same channel, same rule (paywall delegate on iOS, PaywallResult on Android) |
 | History/restore | `getpurchasehistory://` → `restoredData` | `history` (also writes `restoredData`) |
-| Paywall / Center / Purchase | `revenuecat://launchPaywall|center|purchase` | `paywall|center|purchase` actions |
+| Paywall / Center / Purchase | `revenuecat://launchPaywall|center|purchase` (`external_id` optional on bridge 2) | `paywall|center|purchase` actions (`external_id` optional) |
+| Identity read | `revenuecat://whoami` → `revenueCatUser` + `onRevenueCatUser` | `whoami` (resolves detail + mirrors the same channel) |
 
 P2 additions (all three runtimes, additive only, `contract_diff` compatible):
-`login` / `logout` (§3), `redeem` (§5.6), `offer` param on purchase (§5.4), `offers[]` +
-`intro.mode` + `eligible` in the catalog envelope (§5.1 to 5.3), per-entitlement detail
-(`period: normal|trial|intro|promo`, product, expiry) in the customer envelope, V4's
-entitlement mapper already carries `period_type`; V3 lifts the same fields from
-CustomerInfo. Existing envelope fields are never renamed or removed; consumers must
-tolerate unknown fields (both LIVE package adapters already do).
+`login` / `logout` / `whoami` (§3), the `bridge: 2` capability stamp + `registered` on every
+envelope + optional `external_id` with the RC-anonymous fallback (§3), `redeem` (§5.6),
+`offer` param on purchase (§5.4), `offers[]` + `intro.mode` + `eligible` in the catalog
+envelope (§5.1 to 5.3), per-entitlement detail (`period: normal|trial|intro|promo`, product,
+expiry) in the customer envelope, V4's entitlement mapper already carries `period_type`; V3
+lifts the same fields from CustomerInfo. Existing envelope fields are never renamed or
+removed; consumers must tolerate unknown fields (both LIVE package adapters already do).
 
 ## 8. Rollout phases
 
@@ -227,7 +251,10 @@ tolerate unknown fields (both LIVE package adapters already do).
   package (runtime adapter, plans/buy/paywall/has/info/restore/center/events, old-build
   fallbacks), zero-secret + secret server verification, SEO README.
 - **P2a (done):** login/logout session bridge on all three runtimes · `redeem` bridge
-  (iOS sheet; Android settles `unsupported`) · package deferred-bind rollout mechanics.
+  (iOS sheet; Android settles `unsupported`) · package deferred-bind rollout mechanics ·
+  `whoami` identity read + `bridge: 2` capability stamp + optional `external_id` with the
+  RevenueCat-anonymous purchase fallback on all three runtimes · package `user()` native
+  read + `registered` + synthesized-id retirement on capable builds.
 - **P2b (native, next):** iOS intro/trial eligibility + `intro.mode` · Google `offers[]`
   normalization + offer-targeted purchase · iOS signed promotional-offer purchase ·
   entitlement detail in the customer envelope. Ships runtime-by-runtime; the LIVE package
@@ -238,8 +265,11 @@ tolerate unknown fields (both LIVE package adapters already do).
 ## 9. Test matrix
 
 LIVE in `test.js` (simulated runtimes): browser no-op · V3 full flow · V3 old build
-(fallback) · V4 full flow · V4 old build (fallback), plus empty-history prompt-resolution
-(the classic observer pitfall) and paywall result-channel racing.
+(fallback) · V3 bridge-2 build (native whoami + RC-anonymous purchases) · V3 legacy-anon
+(synthesized id kept) · V4 full flow · V4 old build (fallback) · V4 identity
+(whoami/adoption/anonymous buy) · V4 legacy retry (missing_param → one synthesized-id
+retry), plus empty-history prompt-resolution (the classic observer pitfall) and paywall
+result-channel racing.
 
 Release matrix on devices (per release): {V3 iOS, V3 Android, V4 iOS, V4 Android} ×
 {anonymous, identified, login, account switch, logout, trial, intro (payg/upfront), regular
