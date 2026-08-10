@@ -114,9 +114,9 @@ async function v2Page (start, c, onItems) {
   }
 }
 
-async function v2LookupKeys (project, c) {
+async function v2LookupKeys (project, c, fresh) {
   const cached = lookupCache[project]
-  if (cached && cached.at > Date.now() - 300000) return cached.map
+  if (!fresh && cached && cached.at > Date.now() - 300000) return cached.map
   const map = {}
   await v2Page(`${V2}/projects/${encodeURIComponent(project)}/entitlements?limit=100`, c, (items) => {
     for (const item of items) map[item.id] = item.lookup_key || item.id
@@ -148,7 +148,14 @@ async function v2Entitlements (user, c) {
     })
   }
   if (!items.length) return []
-  const keys = await v2LookupKeys(c.project, c)
+  let keys = await v2LookupKeys(c.project, c)
+  // An entitlement created after this project's map was cached would not be
+  // in it, and returning the raw "entl..." id would read as a DIFFERENT
+  // entitlement than the one the app gates on: a paying subscriber denied
+  // until the cache expired. A miss refreshes the map once instead.
+  if (items.some((e) => !keys[e.entitlement_id])) {
+    keys = await v2LookupKeys(c.project, c, true)
+  }
   return items.map((e) => ({
     id: keys[e.entitlement_id] || e.entitlement_id,
     // v2 reports expires_at as epoch milliseconds (per the API reference);

@@ -38,9 +38,11 @@ gates fail closed.)
   now resolves `{ ok: false, code: 'unsupported' }` immediately instead of
   hanging for the full window and then resolving `ok: true`; the timeout case
   now resolves `ok: false, code: 'timeout'`. On the classic runtime it now
-  waits for bridge proof like `redeem()` and `whoami` (unproven old builds
-  route unknown schemes into a catch-all that can raise a native alert), and
-  an ambiguous presentation-ack failure keeps waiting for the real dismissal
+  requires bridge proof like `redeem()` and `whoami` (unproven old builds
+  route unknown schemes into a catch-all that can raise a native alert) —
+  proving it with the catalog read when nothing else has run yet, so an
+  account screen that calls `center()` first still opens on a capable build.
+  An ambiguous presentation-ack failure keeps waiting for the real dismissal
   instead of settling early.
 - **Unknown intro prices stay unknown.** The legacy offerings channel reports
   no numeric intro price; `plans()` now preserves `price.value: null` for it
@@ -70,6 +72,10 @@ gates fail closed.)
   project id falls back to v1 instead of silently denying every subscriber.
 - **Server: v2 entitlement pagination** now follows `next_page` on the
   active-entitlements read as well.
+- **Server: a newly created entitlement is no longer denied.** The v2
+  entitlement-id to lookup-key map is cached ~5 minutes; an id missing from
+  it (an entitlement created since) used to surface as the raw `entl...` id
+  and fail the gate. A miss now refreshes the map once.
 - `ErrorCode` union type and documented error-code vocabulary; README gained
   Error handling, `info()`, `ready()`, `offers()`, `redeem()` and `off()`
   sections; server docs now state the create-on-read behavior of RevenueCat's
