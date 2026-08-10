@@ -21,7 +21,7 @@ async function main (): Promise<void> {
   stop()
   revenuecat.off('purchase')
 
-  const opts: ServerOptions = { key: 'appl_x', timeout: 5000 }
+  const opts: ServerOptions = { key: 'appl_x', timeout: 5000, sandbox: false }
   const ok: boolean = await entitled('u1', 'premium', opts)
   const active: ActiveEntitlement[] = await entitlements('u1', { secret: 'sk_x', project: 'proj1' })
   const raw: Record<string, unknown> | null = await customer('u1', opts)

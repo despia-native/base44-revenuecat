@@ -28,6 +28,10 @@
 //   1. opts.secret / opts.key / opts.project
 //   2. env RC_SECRET / RC_KEY / RC_PROJECT
 //   3. env REVENUECAT_SECRET_KEY / REVENUECAT_PUBLIC_KEY / REVENUECAT_PROJECT_ID
+// While testing with a Sandbox Apple ID / Play license tester, pass
+// { sandbox: true } (or set RC_SANDBOX=true): RevenueCat answers with
+// PRODUCTION purchases only unless the X-Is-Sandbox header is set, so without
+// it a sandbox purchase makes the client say entitled and the server say not.
 // `secret` wins over `key` when both are set; which API path runs is decided
 // by the key's own prefix (only sk_... keys may use v2), not by which option
 // or variable carried it.
@@ -73,15 +77,27 @@ function creds (opts) {
     throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
   }
   const timeout = opts.timeout > 0 ? opts.timeout : DEFAULT_TIMEOUT_MS
+  const envSandbox = env('RC_SANDBOX') || env('REVENUECAT_SANDBOX')
+  const sandbox = opts.sandbox != null
+    ? !!opts.sandbox
+    : envSandbox === 'true' || envSandbox === '1'
   // Only secret keys may use the v2 API; public keys always ride v1.
-  return { secret: auth, project: auth.indexOf('sk_') === 0 ? project : null, timeout }
+  return { secret: auth, project: auth.indexOf('sk_') === 0 ? project : null, timeout, sandbox }
 }
 
 async function rcFetch (url, c) {
   // A hung connection must not hang the caller's backend function: abort
   // after the timeout and let the error surface (fail closed).
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(c.timeout) : undefined
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + c.secret, 'Content-Type': 'application/json' }, signal })
+  const headers = { Authorization: 'Bearer ' + c.secret, 'Content-Type': 'application/json' }
+  // RevenueCat returns PRODUCTION purchases only unless this header is set:
+  // without it a sandbox/TestFlight purchase is invisible here, so the client
+  // says entitled and the server says not. Opt in while testing.
+  if (c.sandbox) headers['X-Is-Sandbox'] = 'true'
+  // NOTE: X-Platform is deliberately NOT sent. It updates the customer's
+  // last_seen field, and a server-side verification call is not the customer
+  // using the app: stamping it would corrupt that signal.
+  const res = await fetch(url, { headers, signal })
   return res
 }
 

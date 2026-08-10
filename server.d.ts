@@ -29,6 +29,14 @@ export interface ServerOptions {
   project?: string
   /** Per-request timeout in milliseconds (default 10000). The request is aborted and the error thrown when it elapses. */
   timeout?: number
+  /**
+   * Include sandbox purchases (sends RevenueCat's `X-Is-Sandbox` header).
+   * RevenueCat returns PRODUCTION purchases only by default, so while testing
+   * with a Sandbox Apple ID or a Play license tester the server would say
+   * "not entitled" for a purchase the device can see. Falls back to env
+   * RC_SANDBOX / REVENUECAT_SANDBOX ("true" or "1"). Leave off in production.
+   */
+  sandbox?: boolean
 }
 
 export interface ActiveEntitlement {

@@ -423,6 +423,7 @@ Because the frontend used `revenuecat.user(user.id)` and the function uses `base
 - Resolution order: explicit `{ key | secret | project }` → env `RC_KEY` / `RC_SECRET` / `RC_PROJECT` → env `REVENUECAT_PUBLIC_KEY` / `REVENUECAT_SECRET_KEY` / `REVENUECAT_PROJECT_ID`.
 - `secret` wins over `key` when both are set. Which API path runs is decided by the key's own prefix — only `sk_…` keys ever use v2; an `sk_…` key placed in `RC_KEY` still unlocks v2, and a public key in `RC_SECRET` still works on v1.
 - `{ timeout: ms }` bounds each RevenueCat request (default 10 s); a hung connection aborts and throws instead of hanging your function.
+- `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases — required while testing, see [Testing](#testing). Off in production.
 - The `/server` entry also exports `entitlements(user)` (active entitlements with expiry) and `customer(user)` (the raw RevenueCat subscriber) and works in any Node (18+) or Deno backend.
 
 ## Error handling
@@ -494,14 +495,19 @@ Using the base44-revenuecat npm package:
 
 - **iOS**: test on TestFlight with a **Sandbox Apple ID** (Settings → App Store → Sandbox Account). Sandbox renewals are accelerated (a month ≈ 5 minutes).
 - **Android**: add your Google account as a **license tester** in Play Console, install from an Internal Testing track.
-- Purchases in sandbox are free and RevenueCat's dashboard shows them within seconds. Watch the Customer view while you test.
-- The server check also sees sandbox purchases; RevenueCat separates environments in its dashboard.
+- Purchases in sandbox are free and RevenueCat's dashboard shows them within seconds. Watch the Customer view while you test (its **Sandbox data** toggle controls what you see).
+- **The server check does NOT see sandbox purchases by default.** RevenueCat's API answers with production purchases only, so a sandbox subscription makes the client say entitled and `entitled()` say not. Pass `{ sandbox: true }` (or set `RC_SANDBOX=true`) while testing, and turn it off for production:
+
+```javascript
+const testing = Deno.env.get('RC_SANDBOX') === 'true'
+const ok = await entitled(user.id, 'premium', { key: RC_KEY, sandbox: testing })
+```
 
 ## Troubleshooting
 
 - **`products()` returns `[]` in the installed app** → the build predates the RevenueCat integration or the keys were added after the last build: check Despia → Integrations → RevenueCat, then rebuild. Also confirm your products are attached to an offering in RevenueCat.
 - **`has('premium')` is false right after buying** → in order of likelihood: (a) you copied `premium` out of these docs and no entitlement with that id exists in your RevenueCat dashboard, so it can never be true. Use your own id. (b) The entitlement exists but the purchased product is not attached to it (Product catalog → Entitlements). (c) The id differs by case or whitespace: it is matched literally, so `Premium` is not `premium`. (d) You bought a consumable or credit pack, which grants no entitlement by design. Check `result.ok` for those, not `has()`. `status()` shows the ids the device actually sees, which is the fastest way to tell these apart.
-- **Server check says false, client says true** → the ids differ. Log `revenuecat.id` in the app and `user.id` in the function. They must be identical strings.
+- **Server check says false, client says true** → two causes, in order of likelihood. (a) **You are testing in sandbox.** RevenueCat's API returns production purchases only unless you pass `{ sandbox: true }` (or set `RC_SANDBOX=true`), so a TestFlight or license-tester purchase is invisible to `entitled()` while the device can see it. (b) The ids differ: log `revenuecat.id` in the app and `user.id` in the function, they must be identical strings.
 - **Nothing happens in the browser** → correct: purchases only exist inside the installed iOS/Android app. Preview logic with `revenuecat.native`.
 - **A `buy()` call seems stuck right after a paywall was shown** → purchase, paywall, and redeem outcomes share one native result channel and are processed in order. If a paywall was presented but the native layer never reported its outcome (e.g. the app was killed mid-sheet), queued purchase calls wait behind it until the paywall wait times out. A fresh app start clears the queue.
 - **`has()` feels slow / you call it on every render** → each `has()`/`status()` call re-asks the native layer (a customer read, plus store history on classic builds). Check once per screen or on the `result`/`purchase` events, keep the boolean in your app state, and re-check after purchases — as in the [complete client pattern](#gate-premium-features-the-complete-client-pattern).
