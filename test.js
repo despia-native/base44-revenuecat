@@ -758,7 +758,7 @@ async function testServer () {
     first_seen: '2026-01-01T00:00:00Z'
   }
   global.fetch = async (url, init) => {
-    calls.push({ url, auth: init.headers.Authorization, signal: init.signal })
+    calls.push({ url, auth: init.headers.Authorization, signal: init.signal, headers: init.headers })
     if (url.includes('/v1/subscribers/')) {
       return { ok: true, status: 200, json: async () => ({ subscriber: SUBSCRIBER }) }
     }
@@ -888,6 +888,29 @@ async function testServer () {
     '429 must throw with .status, not fall back'
   )
   assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'no v1 request spent on a rate limit')
+
+  // Sandbox: RevenueCat answers with PRODUCTION purchases only unless the
+  // X-Is-Sandbox header is set, so a TestFlight purchase would be invisible
+  // to the gate. Opt-in only — production calls must never carry it.
+  calls.length = 0
+  await server.entitled('u1', 'premium', { key: 'appl_pub' })
+  assert.ok(!calls[0].headers['X-Is-Sandbox'], 'production calls never claim sandbox')
+  calls.length = 0
+  await server.entitled('u1', 'premium', { key: 'appl_pub', sandbox: true })
+  assert.strictEqual(calls[0].headers['X-Is-Sandbox'], 'true', 'sandbox opt-in sends the header')
+  // X-Platform must never be sent: it would stamp the customer's last_seen
+  // on a server verification the user did not make.
+  assert.ok(!calls[0].headers['X-Platform'], 'never stamps last_seen via X-Platform')
+  calls.length = 0
+  process.env.RC_SANDBOX = 'true'
+  await server.entitled('u1', 'premium', { key: 'appl_pub' })
+  assert.strictEqual(calls[0].headers['X-Is-Sandbox'], 'true', 'RC_SANDBOX=true opts in')
+  delete process.env.RC_SANDBOX
+  calls.length = 0
+  process.env.RC_SANDBOX = 'false'
+  await server.entitled('u1', 'premium', { key: 'appl_pub' })
+  assert.ok(!calls[0].headers['X-Is-Sandbox'], 'RC_SANDBOX=false stays on production')
+  delete process.env.RC_SANDBOX
 
   // customer(): raw v1 subscriber snapshot.
   const snap = await server.customer('u1', { key: 'appl_pub' })

@@ -274,6 +274,10 @@ try {
 if (!ok) return Response.json({ error: 'premium required' }, { status: 402 })
 ```
 
+While testing with a Sandbox Apple ID or a Play license tester, add `sandbox: true` to those
+options: RevenueCat answers with production purchases only by default, so a sandbox purchase the
+device can see is invisible to the server check.
+
 Same entitlement id, same string, asked of RevenueCat directly. No webhooks and no subscriptions
 table to keep in sync. The user id must be **identical** to the one you passed to
 `revenuecat.user(id)`, or the server will look up a different customer and correctly say no. The

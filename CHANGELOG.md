@@ -60,6 +60,15 @@ gates fail closed.)
 
 ### Added
 
+- **Server: sandbox purchases can be verified.** RevenueCat's API answers
+  with PRODUCTION purchases only, so a Sandbox Apple ID / Play license-tester
+  purchase was invisible to `entitled()` while the device could see it — the
+  client said entitled and the server said not, all through sandbox testing.
+  Pass `{ sandbox: true }` (or set `RC_SANDBOX=true`) to send RevenueCat's
+  `X-Is-Sandbox` header; production calls never carry it. The README's Testing
+  section previously claimed the server check saw sandbox purchases, which was
+  wrong, and Troubleshooting now names this as the first thing to check when
+  the two sides disagree.
 - **Server: per-request timeout.** RevenueCat calls abort after 10 s by
   default (`{ timeout: ms }` to change), so a hung connection can no longer
   hang a Base44 backend function.
