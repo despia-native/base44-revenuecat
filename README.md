@@ -237,13 +237,23 @@ if (monthly.trial) {
 
 All three Apple intro types are normalized (`trial`, and `intro` with `type: 'payg' | 'upfront'`), and Google base-plan offer phases map onto the same shape, so your UI code never branches per platform.
 
-**Targeted discounts** (win-back offers, retention pricing): pass the offer id explicitly:
+**Targeted discounts** (win-back offers, retention pricing): **target with an offering, not a buy option.**
 
 ```javascript
-await revenuecat.buy('annual', { offer: 'winback50' })
+// Build a "winback" offering in RevenueCat, then present it to the right people
+const info = await revenuecat.info()
+if (info.entitlements.premium?.unsubscribed) {
+  await revenuecat.paywall('winback')        // or: await revenuecat.plans('winback')
+}
 ```
 
-The offer id is forwarded to the native layer and honored on builds with explicit-offer support (iOS promotional offers are fetched signed via RevenueCat; Android selects the matching Google offer). Tip: tag manual-only Google offers `rc-ignore-offer` in RevenueCat so automatic selection never turns your win-back price into the acquisition price. And if you use `revenuecat.paywall()`, RevenueCat Paywalls render configured trials, intro offers, and promotional offers for you, with no offer code at all.
+`info().entitlements.<id>.unsubscribed` marks exactly the window worth targeting: cancelled, but still inside the paid period. Offering-based targeting works on both platforms today.
+
+> **`buy(id, { offer })` is not implemented natively yet.** The package forwards the offer id, but no current build reads it: the native purchase action accepts only the product and the user id, so the store applies its default offer logic and your targeted price is silently *not* used. The option is accepted for forward compatibility, not because it works — don't build a discount flow on it. Use an offering, as above.
+
+> **A misspelled offering id shows your default offering.** `paywall('winbak')` does not fail: on both iOS and Android the native layer falls back to presenting your **default** offering, so a full-price paywall appears where you meant a discount. Copy offering ids exactly. (`plans(id)` and `offers(id)` behave differently on purpose: an unknown id there answers `offeringNotFoundError` with no products rather than widening to the full catalog.)
+
+Tag manual-only Google offers `rc-ignore-offer` in RevenueCat so automatic selection never turns your win-back price into the acquisition price. This matters *more* while explicit-offer purchase is unimplemented: the tag is the only thing keeping a retention price out of the default selection. And if you use `revenuecat.paywall()`, RevenueCat Paywalls render configured trials, intro offers, and promotional offers for you, with no offer code at all.
 
 ### `revenuecat.redeem()`: Apple offer codes
 

@@ -192,10 +192,20 @@ declare namespace revenuecat {
 
   export interface BuyOptions {
     /**
-     * A specific promotional / Google offer id to purchase with. Forwarded to
-     * the native layer; honored on builds with explicit-offer support, ignored
-     * (default offer logic) on older builds. Tag manual-only Google offers
-     * `rc-ignore-offer` in RevenueCat so automatic selection skips them.
+     * A specific promotional / Google offer id to purchase with.
+     *
+     * NOT IMPLEMENTED NATIVELY YET. The package forwards this id, but no
+     * current build reads it: the native purchase action accepts only the
+     * product and the user id, so the store applies its DEFAULT offer logic
+     * and your targeted price is silently not used. Accepted for forward
+     * compatibility — do not build a discount flow on it.
+     *
+     * To target a price today, target an OFFERING instead: build one in
+     * RevenueCat and present it with `paywall('winback')` / `plans('winback')`.
+     * Tag manual-only Google offers `rc-ignore-offer` in RevenueCat so
+     * automatic selection never promotes a retention price to everyone.
+     *
+     * @deprecated Has no effect on any current build; use an offering.
      */
     offer?: string
   }

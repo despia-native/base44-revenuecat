@@ -58,6 +58,26 @@ gates fail closed.)
   `server.d.ts` remains as a named-exports-only fallback so legacy
   `moduleResolution: "node"` consumers keep resolving.
 
+### Fixed (documentation)
+
+- **`buy(id, { offer })` was documented as working. It is not implemented
+  natively.** Verified against the Despia Framework runtime source: the V4
+  RevenueCat module's `purchase` action declares only `external_id` and
+  `product`, and neither the Swift nor the Kotlin bridge reads an offer
+  parameter, so the forwarded id is silently ignored and the store applies
+  its default offer logic. The README now documents offering-based targeting
+  (`paywall('winback')` / `plans('winback')` driven by
+  `info().entitlements.<id>.unsubscribed`) as the way to target a price
+  today, and `BuyOptions.offer` is marked deprecated in the types. The option
+  is still accepted and still forwarded, so nothing breaks when the native
+  side ships it.
+- **A misspelled offering id silently shows your default offering.** Both
+  native bridges fall back to the default offering when `paywall(id)` names
+  an offering that does not exist, so a full-price paywall appears where a
+  discount was intended. Now documented, along with the deliberate contrast:
+  `plans(id)` / `offers(id)` answer `offeringNotFoundError` instead of
+  widening to the full catalog.
+
 ### Added
 
 - **Server: sandbox purchases can be verified.** RevenueCat's API answers
