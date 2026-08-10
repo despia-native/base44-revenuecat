@@ -1078,11 +1078,26 @@
       if (rt === 0) return Promise.resolve(webResult('center'))
       // Same deferred gate as whoami/redeem: an unproven classic build routes
       // unknown revenuecat:// actions into its license-gated purchase
-      // catch-all, which can raise a native alert. Only fire once an envelope
-      // has proven the bridge; before that, answer unsupported immediately.
+      // catch-all, which can raise a native alert. But answering unsupported
+      // outright would break Customer Center on a perfectly capable build
+      // whose app happens to open an account screen first, so prove the
+      // bridge with the catalog read (an action every classic build has, and
+      // one this package already fires unconditionally) and decide on facts.
       if (rt === 3 && !self._v3) {
-        return Promise.resolve({ ok: false, source: 'center', platform: os(), runtime: 3, error: null, code: 'unsupported' })
+        // The probe must never turn center() into a rejecting promise: the
+        // client contract is that every call resolves.
+        return self.offers().catch(function () { return null }).then(function () {
+          if (!self._v3) {
+            return { ok: false, source: 'center', platform: os(), runtime: 3, error: null, code: 'unsupported' }
+          }
+          return self._center(rt)
+        })
       }
+      return this._center(rt)
+    },
+
+    _center: function (rt) {
+      var self = this
       return new Promise(function (resolve) {
         var done = false
         function settle (result) {

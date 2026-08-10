@@ -774,9 +774,14 @@ async function testServer () {
     if (url.includes('/customers/u404/')) {
       return { ok: false, status: 404, json: async () => ({}) }
     }
+    if (url.includes('/projects/projNew/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlNEW', expires_at: null }] }) }
+    }
     if (url.includes('/projects/projPaged/customers/') && url.includes('active_entitlements')) {
       if (url.includes('starting_after')) {
-        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: null }] }) }
+        // v2 reports expires_at as EPOCH MILLISECONDS (per the API
+        // reference), not an ISO string: the mapper must convert it.
+        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: 1658399423658 }] }) }
       }
       return {
         ok: true,
@@ -790,11 +795,21 @@ async function testServer () {
     if (url.includes('/customers/') && url.includes('active_entitlements')) {
       return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl123', expires_at: null }] }) }
     }
+    if (url.includes('/projects/projNew/entitlements?')) {
+      // First read predates the new entitlement; a refresh knows about it.
+      projNewReads++
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: projNewReads > 1 ? [{ id: 'entlNEW', lookup_key: 'premium' }] : [{ id: 'entlOLD', lookup_key: 'legacy' }] })
+      }
+    }
     if (url.includes('/entitlements?')) {
       return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entl123', lookup_key: 'premium' }, { id: 'entl2', lookup_key: 'plus' }] }) }
     }
     return { ok: false, status: 404, json: async () => ({}) }
   }
+  let projNewReads = 0
   function freshServer () {
     delete require.cache[require.resolve('./server.cjs')]
     return require('./server.cjs')
@@ -838,10 +853,21 @@ async function testServer () {
   await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' })
   assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'wrong project remembered, straight to v1')
 
-  // v2 pagination: active_entitlements follows next_page.
+  // v2 pagination: active_entitlements follows next_page, and epoch-ms
+  // expires_at values convert to ISO.
   calls.length = 0
   const paged = await server.entitlements('u1', { secret: 'sk_test', project: 'projPaged' })
   assert.deepStrictEqual(paged.map((e) => e.id).sort(), ['plus', 'premium'])
+  const plusEnt = paged.find((e) => e.id === 'plus')
+  assert.strictEqual(plusEnt.expires, new Date(1658399423658).toISOString(), 'epoch-ms expires_at converts to ISO')
+
+  // An entitlement created after the lookup-key map was cached must not read
+  // as a raw "entl..." id (which would deny a paying subscriber until the
+  // cache expired): a miss refreshes the map once.
+  calls.length = 0
+  const fresh = await server.entitlements('u1', { secret: 'sk_test', project: 'projNew' })
+  assert.deepStrictEqual(fresh, [{ id: 'premium', expires: null }], 'unknown entitlement id refreshes the lookup map')
+  assert.strictEqual(projNewReads, 2, 'exactly one refresh, not a loop')
 
   // v2 key/project mismatch (401): falls back to v1 and remembers, so the
   // second call skips v2 entirely.
@@ -1313,8 +1339,10 @@ async function testCenterHonesty () {
   assert.strictEqual(unsupported.ok, false)
   assert.strictEqual(unsupported.code, 'unsupported')
 
-  // An UNPROVEN classic build never fires the scheme (old catch-alls raise a
-  // native alert on unknown revenuecat:// actions): unsupported immediately.
+  // An UNPROVEN classic build never fires the center scheme (old catch-alls
+  // raise a native alert on unknown revenuecat:// actions). It may probe with
+  // the catalog read, which every classic build carries, but silence there
+  // means an old build: unsupported, and no center scheme fired.
   const fired = []
   const winUnproven = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
   Object.defineProperty(winUnproven, 'despia', { set (cmd) { fired.push(cmd) }, configurable: true })
@@ -1323,7 +1351,30 @@ async function testCenterHonesty () {
   iap = freshRequire()
   const gated = await iap.center()
   assert.strictEqual(gated.code, 'unsupported')
-  assert.strictEqual(fired.length, 0, 'no scheme fired without bridge proof')
+  assert.ok(!fired.some((c) => c.startsWith('revenuecat://center')), 'no center scheme fired without bridge proof')
+
+  // A CAPABLE classic build whose app opens the account screen first: the
+  // probe proves the bridge, so Customer Center still works (it must not be
+  // reported unsupported just because nothing else ran yet).
+  const winProbe = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(winProbe, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          winProbe.revenueCatProducts = envelope(3)          // proves the bridge
+          if (typeof winProbe.onRevenueCatProducts === 'function') winProbe.onRevenueCatProducts(winProbe.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://center')) {
+          if (typeof winProbe.onRevenueCatCenter === 'function') winProbe.onRevenueCatCenter({ event: 'dismissed' })
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = winProbe
+  global.self = winProbe
+  iap = freshRequire()
+  const probed = await iap.center()                          // first call of all
+  assert.strictEqual(probed.ok, true, 'capable build still opens Customer Center on a cold first call')
 
   // Silence on a PROVEN V3 build: resolves ok:false, code timeout.
   const winSilent = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
