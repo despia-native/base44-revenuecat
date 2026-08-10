@@ -151,6 +151,9 @@ async function v2Entitlements (user, c) {
   const keys = await v2LookupKeys(c.project, c)
   return items.map((e) => ({
     id: keys[e.entitlement_id] || e.entitlement_id,
+    // v2 reports expires_at as epoch milliseconds (per the API reference);
+    // new Date() accepts that number directly, and an ISO string equally,
+    // should the format ever change. null = lifetime.
     expires: e.expires_at ? new Date(e.expires_at).toISOString() : null
   }))
 }

@@ -776,7 +776,9 @@ async function testServer () {
     }
     if (url.includes('/projects/projPaged/customers/') && url.includes('active_entitlements')) {
       if (url.includes('starting_after')) {
-        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: null }] }) }
+        // v2 reports expires_at as EPOCH MILLISECONDS (per the API
+        // reference), not an ISO string: the mapper must convert it.
+        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: 1658399423658 }] }) }
       }
       return {
         ok: true,
@@ -838,10 +840,13 @@ async function testServer () {
   await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' })
   assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'wrong project remembered, straight to v1')
 
-  // v2 pagination: active_entitlements follows next_page.
+  // v2 pagination: active_entitlements follows next_page, and epoch-ms
+  // expires_at values convert to ISO.
   calls.length = 0
   const paged = await server.entitlements('u1', { secret: 'sk_test', project: 'projPaged' })
   assert.deepStrictEqual(paged.map((e) => e.id).sort(), ['plus', 'premium'])
+  const plusEnt = paged.find((e) => e.id === 'plus')
+  assert.strictEqual(plusEnt.expires, new Date(1658399423658).toISOString(), 'epoch-ms expires_at converts to ISO')
 
   // v2 key/project mismatch (401): falls back to v1 and remembers, so the
   // second call skips v2 entirely.
