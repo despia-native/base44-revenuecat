@@ -1,6 +1,6 @@
 # Base44 RevenueCat SDK: Product Specification v2
 
-Status key: **LIVE** = shipped across `base44-revenuecat` 1.1.0, `d-ios`, `d-android`, and `despia-framework`. **P2/P3** = phased native work below.
+Status key: **LIVE** = shipped across `base44-revenuecat` 1.6.0, `d-ios`, `d-android`, and `despia-framework`. **P2/P3** = phased native work below.
 
 The product principle stands: if a Base44 user has to learn RevenueCat's native SDK, StoreKit
 vs Play Billing, native callbacks, or a subscription mirror table, we failed. Everything
@@ -30,7 +30,7 @@ compares the caller's literal string against the ids RevenueCat reports for that
 | `user()` | **LIVE**: native identity read on current builds, local echo elsewhere | resolves `{ id, user, anonymous, registered }`, see §3 |
 | `logout()` | **LIVE**: native `logOut()` on current builds, local clear everywhere | see §3 |
 | `plans(offering?)` | **LIVE** | nested plan shape derived from the unified catalog envelope |
-| `products(ids?)` / `offers(offering?)` | **LIVE** | flat unified products / full envelope |
+| `products(offering?)` / `offers(offering?)` | **LIVE** | flat unified products / full envelope |
 | `buy(id, options?)` | **LIVE**; `options.offer` P2 | accepts plan id, kind, `$rc_` package id, or store product id |
 | `paywall(offering?)` | **LIVE** | one resolved result per presentation |
 | `has(entitlement)` | **LIVE** | CustomerInfo-backed, store-history fallback |
@@ -285,10 +285,11 @@ removed; consumers must tolerate unknown fields (both LIVE package adapters alre
   `whoami` identity read + `bridge: 2` capability stamp + optional `external_id` with the
   RevenueCat-anonymous purchase fallback on all three runtimes · package `user()` native
   read + `registered` + synthesized-id retirement on capable builds.
-- **P2b (native, next):** iOS intro/trial eligibility + `intro.mode` · Google `offers[]`
-  normalization + offer-targeted purchase · iOS signed promotional-offer purchase ·
-  entitlement detail in the customer envelope. Ships runtime-by-runtime; the LIVE package
-  auto-upgrades via capability probes.
+- **P2b (native, partially shipped):** `intro.mode` and per-entitlement detail in the
+  customer envelope shipped (package 1.4.x/1.5.0 reads both) · still open: iOS intro/trial
+  eligibility · Google `offers[]` normalization + offer-targeted purchase · iOS signed
+  promotional-offer purchase. Ships runtime-by-runtime; the LIVE package auto-upgrades via
+  capability probes.
 - **P3 (infra, optional):** `proof()` signed entitlement tokens + Despia-side verification
   endpoint; package `strict` mode; Base44 marketplace listing/template.
 

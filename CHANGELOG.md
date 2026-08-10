@@ -4,12 +4,77 @@ All notable changes to `base44-revenuecat` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Every release keeps the same promise: no call ever throws, and a newer
+Every release keeps the same promise: no client call ever throws, and a newer
 package on an older Despia build degrades instead of breaking. Native
 capabilities are probed at runtime, so you never version-match JavaScript
-against a compiled binary.
+against a compiled binary. (The `/server` helpers throw by design, so backend
+gates fail closed.)
 
-## [1.5.0]
+## [1.6.0] - 2026-08-10
+
+### Fixed
+
+- **A `customer` envelope with no entitlement data no longer masks the store
+  history.** A build whose customer action answered with an empty object made
+  a live subscriber read as not entitled; such an envelope now falls through
+  to the entitlements read / device history, the same guard the entitlements
+  action already had. Applies to both runtimes.
+- **Synchronous native answers can no longer be lost.** Every classic-runtime
+  call now registers its response channel *before* firing the scheme (only
+  `paywall()` did previously); a native layer that answered in the same tick
+  had its answer deleted by the listener setup and the call waited for the
+  full timeout.
+- **Switching users invalidates the cached catalog.** `user(newId)` now clears
+  the plan cache like `logout()` always did, so targeted offerings can never
+  price one user off another user's catalog.
+- **The unsubscribe function returned by `on()` no longer leaks.** It now
+  releases the package's own bookkeeping too (previously only `off()` did),
+  so subscribe/unsubscribe cycles no longer grow memory.
+- **`center()` reports failure honestly.** A build without Customer Center
+  now resolves `{ ok: false, code: 'unsupported' }` immediately instead of
+  hanging for the full window and then resolving `ok: true`; the timeout case
+  now resolves `ok: false, code: 'timeout'`.
+- **Unknown intro prices stay unknown.** The legacy offerings channel reports
+  no numeric intro price; `plans()` now preserves `price.value: null` for it
+  instead of coercing to `0` (types updated accordingly) — so an unknown
+  price can never render as "$0.00".
+- **`buy(object)` with no usable id fails fast** with `missing_param` instead
+  of sending the string "[object Object]" to the store.
+- **Types match runtime for CommonJS consumers.** The main entry's
+  declaration now uses `export =` (the CJS export is the revenuecat object
+  itself, not `{ default }`), and the `/server` entry ships split
+  `server.d.mts` / `server.d.cts` so `require('base44-revenuecat/server')`
+  no longer typechecks a `.default` that is `undefined` at runtime.
+
+### Added
+
+- **Server: per-request timeout.** RevenueCat calls abort after 10 s by
+  default (`{ timeout: ms }` to change), so a hung connection can no longer
+  hang a Base44 backend function.
+- **Server: honest v2 fallback.** Only a v2 key/project mismatch (401/403/404)
+  falls back to v1 — and the verdict is remembered, so a misconfigured v2
+  setup no longer doubles every call's latency. Rate limits (429) and server
+  errors now surface to the caller (with `.status` on the error) instead of
+  silently spending a second request.
+- **Server: v2 entitlement pagination** now follows `next_page` on the
+  active-entitlements read as well.
+- `ErrorCode` union type and documented error-code vocabulary; README gained
+  Error handling, `info()`, `ready()`, `offers()`, `redeem()` and `off()`
+  sections; server docs now state the create-on-read behavior of RevenueCat's
+  v1 subscriber endpoint and every configuration option.
+- `package.json`: `engines.node >= 18`, `./package.json` export, provenance
+  on publish; removed the incorrect `module` field (the main entry is UMD/CJS,
+  not ESM).
+
+### Compatibility
+
+- `center()` callers that treated `ok: true, code: 'timeout'` as success
+  should branch on `code`; every other change is behavior users already
+  expected. `Plan.price.value` is now typed `number | null` (it was already
+  null-shaped at runtime on modern builds for legacy intro offers — the
+  runtime previously masked it as `0`).
+
+## [1.5.0] - 2026-08-08
 
 ### Added
 
@@ -31,7 +96,7 @@ against a compiled binary.
   nothing regresses. The new per-entitlement fields are optional in the types
   for exactly that reason.
 
-## [1.4.3]
+## [1.4.3] - 2026-08-08
 
 Documentation only. No runtime change: `index.js`, the type definitions, and
 both server entries are byte-identical to 1.4.2. Published so the npm page,
@@ -57,7 +122,7 @@ badges.
   information ("on npm, tests passing, TypeScript types, Apache-2.0 licensed,
   zero dependencies") instead of a row of broken labels.
 
-## [1.4.2]
+## [1.4.2] - 2026-08-08
 
 ### Fixed
 
@@ -91,7 +156,7 @@ badges.
 - An empty result from that channel now carries an error and a code instead
   of `ok:false` with nothing to display.
 
-## [1.4.1]
+## [1.4.1] - 2026-08-08
 
 ### Fixed
 
@@ -104,7 +169,7 @@ badges.
   first miss. Pages that are not the Framework never wait, since the absence
   of the wire is answered instantly.
 
-## [1.4.0]
+## [1.4.0] - 2026-08-08
 
 ### Changed
 
@@ -132,7 +197,7 @@ badges.
   - `paywall()` falls back to the legacy `launchPaywall` action spelling on
     builds that predate the current name.
 
-## [1.3.0]
+## [1.3.0] - 2026-08-08
 
 ### Added
 
@@ -166,7 +231,7 @@ badges.
 - The identity read is never fired at a build that has not proven it
   supports it, so no old binary can mistake it for a purchase.
 
-## [1.2.0]
+## [1.2.0] - 2026-08-07
 
 ### Added
 
@@ -187,7 +252,7 @@ badges.
   answer has proven the build carries the bridge, so an older binary can
   never be shown a stray prompt.
 
-## [1.1.0]
+## [1.1.0] - 2026-08-07
 
 ### Added
 
@@ -200,7 +265,7 @@ badges.
   RevenueCat public SDK key for entitlement checks, with the secret-key v2
   path available when you want it.
 
-## [1.0.0]
+## [1.0.0] - 2026-08-07
 
 ### Added
 
@@ -211,12 +276,3 @@ badges.
   contract shared by both Despia runtimes, with safe no-op resolutions in a
   plain browser.
 
-[1.5.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.5.0
-[1.4.3]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.3
-[1.4.2]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.2
-[1.4.1]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.1
-[1.4.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.4.0
-[1.3.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.3.0
-[1.2.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.2.0
-[1.1.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.1.0
-[1.0.0]: https://github.com/despia-native/base44-revenuecat/releases/tag/v1.0.0
