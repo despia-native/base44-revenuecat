@@ -41,7 +41,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Type-check the consumer fixtures (ESM + CJS, node16 resolution)
-        run: npx --yes -p typescript@5 tsc -p types-test
+      - name: Type-check the consumer fixtures (node16 ESM + CJS, and legacy node10 resolution)
+        run: npm run test:types
       - name: Lint the published package shape
         run: npx --yes publint

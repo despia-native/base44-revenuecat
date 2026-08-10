@@ -496,6 +496,24 @@
     return !!(ents && ((ents.active || []).length || (ents.all || []).length))
   }
 
+  // When the entitlement answer comes from history/the entitlements read but
+  // a real customer envelope also arrived, keep the envelope's metadata
+  // (active subscriptions, the manage deep link, the identity it named):
+  // falling back for entitlements must not blank fields the envelope carried.
+  function withEnvelopeMeta (status, envelope) {
+    if (!envelope) return status
+    keepProject(envelope)
+    if (Array.isArray(envelope.subscriptions) && envelope.subscriptions.length && !status.subscriptions.length) {
+      status.subscriptions = envelope.subscriptions
+    }
+    if (envelope.management && !status.management) status.management = envelope.management
+    if (envelope.user && !status.user) {
+      status.user = envelope.user
+      status.anonymous = envelope.anonymous !== false
+    }
+    return status
+  }
+
   function customerStatus (envelope, rows) {
     var ents = envelope && envelope.entitlements || {}
     keepProject(envelope)
@@ -669,7 +687,12 @@
     _identity: function (raw, anon) {
       var self = this
       var id = raw == null || raw === '' ? null : String(raw)
-      if (id && anon === false && !self._user) self._user = id
+      if (id && anon === false && !self._user) {
+        self._user = id
+        // Adoption is an identity change like any other: a catalog cached for
+        // the anonymous user must not price the adopted account.
+        self._catalog = null
+      }
       var user = self._user || (anon === false ? id : null)
       return { id: id || user, user: user, anonymous: !user, registered: !!user }
     },
@@ -1053,6 +1076,13 @@
       var self = this
       var rt = runtime()
       if (rt === 0) return Promise.resolve(webResult('center'))
+      // Same deferred gate as whoami/redeem: an unproven classic build routes
+      // unknown revenuecat:// actions into its license-gated purchase
+      // catch-all, which can raise a native alert. Only fire once an envelope
+      // has proven the bridge; before that, answer unsupported immediately.
+      if (rt === 3 && !self._v3) {
+        return Promise.resolve({ ok: false, source: 'center', platform: os(), runtime: 3, error: null, code: 'unsupported' })
+      }
       return new Promise(function (resolve) {
         var done = false
         function settle (result) {
@@ -1072,10 +1102,17 @@
         }, T.sheet)
         if (rt === 4) {
           v4call('center', { external_id: self._user }, T.probe).catch(function (err) {
-            // A build without Customer Center must say so now, not report
-            // success after sitting on the timeout for the full window.
-            var code = err && err.code === 'no_module' ? 'unsupported' : err && err.code || 'error'
-            settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: code })
+            // A build that definitively cannot present must say so now, not
+            // report success after sitting on the timeout for the full
+            // window. An AMBIGUOUS failure (e.g. the presentation ack timing
+            // out on a build that only answers at dismissal) keeps waiting
+            // for the dismissed event; the outer cap still bounds it.
+            var code = err && err.code
+            if (code === 'no_module') {
+              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: 'unsupported' })
+            } else if (code === 'call_failed' || code === 'unknown_action' || code === 'missing_param') {
+              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: code })
+            }
           })
         } else {
           fire(self._user ? 'revenuecat://center?external_id=' + encodeURIComponent(self._user) : 'revenuecat://center')
@@ -1112,8 +1149,8 @@
           // something. An empty answer is a real state (a project with no
           // entitlements mapped), but it must not outrank the device's store
           // history, or a live subscriber reads as not entitled.
-          if (ents && ((ents.active || []).length || (ents.all || []).length)) return entitlementsStatus(ents, rows)
-          if (rows && rows.length) return historyStatus(rows)
+          if (ents && ((ents.active || []).length || (ents.all || []).length)) return withEnvelopeMeta(entitlementsStatus(ents, rows), envelope)
+          if (rows && rows.length) return withEnvelopeMeta(historyStatus(rows), envelope)
           // Nothing reported anywhere: a real empty envelope is still the
           // best answer (it carries user/anonymous/management metadata).
           if (envelope) return customerStatus(envelope, rows)
@@ -1131,8 +1168,9 @@
           return self.restore().then(function (r) {
             // An envelope with no entitlement data (an old build acking the
             // read with an empty object) must not outrank a store history
-            // that shows an active subscription.
-            if (!reportsEntitlements(envelope) && r && r.active && r.active.length) return r
+            // that shows an active subscription; the envelope's metadata
+            // (subscriptions, manage link, identity) still rides along.
+            if (!reportsEntitlements(envelope) && r && r.active && r.active.length) return withEnvelopeMeta(r, envelope)
             return customerStatus(envelope, r && r.purchases || [])
           })
         }

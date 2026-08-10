@@ -76,6 +76,7 @@
     "index.d.ts",
     "server.cjs",
     "server.mjs",
+    "server.d.ts",
     "server.d.cts",
     "server.d.mts",
     "README.md",
@@ -89,7 +90,7 @@
   },
   "scripts": {
     "test": "node test.js",
-    "test:types": "tsc -p types-test",
-    "prepublishOnly": "npm test"
+    "test:types": "npx --yes -p typescript@5 tsc -p types-test && npx --yes -p typescript@5 tsc -p types-test/node10",
+    "prepublishOnly": "npm test && npm run test:types && npx --yes publint"
   }
 }

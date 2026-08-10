@@ -128,7 +128,16 @@ async function v2LookupKeys (project, c) {
 async function v2Entitlements (user, c) {
   const id = encodeURIComponent(user)
   const first = await rcFetch(`${V2}/projects/${encodeURIComponent(c.project)}/customers/${id}/active_entitlements?limit=100`, c)
-  if (first.status === 404) return []                      // customer RevenueCat has never seen
+  if (first.status === 404) {
+    // Ambiguous: an unseen customer 404s, but so does a wrong project id —
+    // and treating the latter as "no entitlements" would silently deny every
+    // paying subscriber. Ask the project-scoped entitlements list (cached
+    // ~5 minutes) to disambiguate: it answering proves the project id is
+    // good, so the customer is simply unseen; it 404ing too throws, and the
+    // caller falls back to v1 and remembers the broken project.
+    await v2LookupKeys(c.project, c)
+    return []
+  }
   if (!first.ok) throw httpError('v2', first)
   const data = await first.json()
   const items = (data.items || []).slice()

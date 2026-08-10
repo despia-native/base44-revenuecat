@@ -18,22 +18,30 @@ gates fail closed.)
   history.** A build whose customer action answered with an empty object made
   a live subscriber read as not entitled; such an envelope now falls through
   to the entitlements read / device history, the same guard the entitlements
-  action already had. Applies to both runtimes.
+  action already had. Applies to both runtimes, and the envelope's metadata
+  (active subscriptions, the manage deep link, the identity it named) still
+  rides along on the fallback answer instead of being blanked.
 - **Synchronous native answers can no longer be lost.** Every classic-runtime
   call now registers its response channel *before* firing the scheme (only
   `paywall()` did previously); a native layer that answered in the same tick
   had its answer deleted by the listener setup and the call waited for the
   full timeout.
-- **Switching users invalidates the cached catalog.** `user(newId)` now clears
-  the plan cache like `logout()` always did, so targeted offerings can never
-  price one user off another user's catalog.
+- **Any identity change invalidates the cached catalog.** `user(newId)` now
+  clears the plan cache like `logout()` always did — and so does identity
+  adoption, when `user()` with no arguments picks up a login the native SDK
+  persisted — so targeted offerings can never price one user off another
+  user's catalog.
 - **The unsubscribe function returned by `on()` no longer leaks.** It now
   releases the package's own bookkeeping too (previously only `off()` did),
   so subscribe/unsubscribe cycles no longer grow memory.
 - **`center()` reports failure honestly.** A build without Customer Center
   now resolves `{ ok: false, code: 'unsupported' }` immediately instead of
   hanging for the full window and then resolving `ok: true`; the timeout case
-  now resolves `ok: false, code: 'timeout'`.
+  now resolves `ok: false, code: 'timeout'`. On the classic runtime it now
+  waits for bridge proof like `redeem()` and `whoami` (unproven old builds
+  route unknown schemes into a catch-all that can raise a native alert), and
+  an ambiguous presentation-ack failure keeps waiting for the real dismissal
+  instead of settling early.
 - **Unknown intro prices stay unknown.** The legacy offerings channel reports
   no numeric intro price; `plans()` now preserves `price.value: null` for it
   instead of coercing to `0` (types updated accordingly) — so an unknown
@@ -45,6 +53,8 @@ gates fail closed.)
   itself, not `{ default }`), and the `/server` entry ships split
   `server.d.mts` / `server.d.cts` so `require('base44-revenuecat/server')`
   no longer typechecks a `.default` that is `undefined` at runtime.
+  `server.d.ts` remains as a named-exports-only fallback so legacy
+  `moduleResolution: "node"` consumers keep resolving.
 
 ### Added
 
@@ -55,7 +65,9 @@ gates fail closed.)
   falls back to v1 — and the verdict is remembered, so a misconfigured v2
   setup no longer doubles every call's latency. Rate limits (429) and server
   errors now surface to the caller (with `.status` on the error) instead of
-  silently spending a second request.
+  silently spending a second request. A 404 on the customer read is
+  disambiguated through the (cached) project entitlements list, so a wrong
+  project id falls back to v1 instead of silently denying every subscriber.
 - **Server: v2 entitlement pagination** now follows `next_page` on the
   active-entitlements read as well.
 - `ErrorCode` union type and documented error-code vocabulary; README gained
@@ -64,7 +76,8 @@ gates fail closed.)
   v1 subscriber endpoint and every configuration option.
 - `package.json`: `engines.node >= 18`, `./package.json` export, provenance
   on publish; removed the incorrect `module` field (the main entry is UMD/CJS,
-  not ESM).
+  not ESM). `prepublishOnly` now runs the full suite, the consumer-fixture
+  type checks (node16 and legacy node10 resolution), and publint.
 
 ### Compatibility
 

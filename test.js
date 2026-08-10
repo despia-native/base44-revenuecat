@@ -768,6 +768,9 @@ async function testServer () {
     if (url.includes('/projects/projLimited/')) {
       return { ok: false, status: 429, json: async () => ({}) }
     }
+    if (url.includes('/projects/projMissing/')) {
+      return { ok: false, status: 404, json: async () => ({}) }
+    }
     if (url.includes('/customers/u404/')) {
       return { ok: false, status: 404, json: async () => ({}) }
     }
@@ -819,11 +822,21 @@ async function testServer () {
   await server.entitled('u1', 'premium', { key: 'appl_pub', project: 'proj123' })
   assert.ok(calls.every((c) => c.url.includes('/v1/')), 'public key stays on v1')
 
-  // v2 404 on the customer: RevenueCat has never seen the id → no
-  // entitlements, and NO v1 fallback (v2 answered authoritatively).
+  // v2 404 on the customer with a VALID project: the project-scoped
+  // entitlements list (cached) proves the project id is good, so the
+  // customer is simply unseen → no entitlements, no v1 fallback.
   calls.length = 0
   assert.deepStrictEqual(await server.entitlements('u404', { secret: 'sk_test', project: 'proj123' }), [])
-  assert.ok(calls.every((c) => c.url.includes('/v2/')), 'v2 404 is an answer, not a fallback trigger')
+  assert.ok(calls.every((c) => c.url.includes('/v2/')), 'unseen customer stays on v2')
+
+  // v2 404 because the PROJECT id is wrong: the disambiguation read 404s
+  // too → fall back to v1 (and remember), never silently deny a subscriber.
+  calls.length = 0
+  assert.strictEqual(await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' }), true)
+  assert.ok(calls.some((c) => c.url.includes('/v1/subscribers/')), 'wrong project fell back to v1')
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' })
+  assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'wrong project remembered, straight to v1')
 
   // v2 pagination: active_entitlements follows next_page.
   calls.length = 0
@@ -1168,6 +1181,32 @@ async function testEmptyCustomerEnvelope () {
   assert.strictEqual(sEmpty.ok, true)
   assert.deepStrictEqual(sEmpty.active, [])
   assert.deepStrictEqual(sEmpty.all, ['old'], 'a reporting envelope still wins over empty history')
+
+  // A real envelope with empty entitlements (products not attached / a
+  // consumables-only app) but live subscriptions metadata: history answers
+  // the entitlement question, the envelope's metadata must survive.
+  const winMeta = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winMeta.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: [], all: [] },
+          subscriptions: ['premium:monthly'],
+          management: 'https://play.google.com/store/account/subscriptions'
+        }),
+        history: () => Promise.resolve([{ productId: 'p1', entitlementId: 'premium', isActive: true, type: 'subscription' }])
+      }
+    }
+  }
+  global.window = winMeta
+  global.self = winMeta
+  const iapMeta = freshRequire()
+  const sMeta = await iapMeta.status()
+  assert.deepStrictEqual(sMeta.active, ['premium'], 'history answers entitlements')
+  assert.deepStrictEqual(sMeta.subscriptions, ['premium:monthly'], 'envelope subscriptions metadata survives the fallback')
+  assert.strictEqual(sMeta.management, 'https://play.google.com/store/account/subscriptions', 'manage link survives the fallback')
   console.log('  empty customer envelope: store history still answers, subscriber keeps access ✓')
 }
 
@@ -1208,13 +1247,23 @@ async function testCatalogInvalidatedOnUserSwitch () {
     module: {
       revenuecat: {
         catalog: () => { served++; return Promise.resolve(envelope(4)) },
-        login: () => Promise.resolve({})
+        login: () => Promise.resolve({}),
+        whoami: () => Promise.resolve({ app_user_id: 'adopted', is_anonymous: false })
       }
     }
   }
   global.window = win
   global.self = win
   const iap = freshRequire()
+
+  // Adoption is an identity change too: a catalog cached while anonymous
+  // must not survive user() (no args) picking up a persisted native login.
+  await iap.plans()
+  assert.ok(iap._catalog, 'catalog cached while anonymous')
+  const adopted = await iap.user()
+  assert.strictEqual(adopted.user, 'adopted')
+  assert.strictEqual(iap._catalog, null, 'identity adoption drops the cached catalog')
+
   await iap.user('alice')
   await iap.plans()
   assert.ok(iap._catalog, 'catalog cached for alice')
@@ -1225,8 +1274,8 @@ async function testCatalogInvalidatedOnUserSwitch () {
   const cached = iap._catalog
   await iap.user('bob')                       // same id: cache survives
   assert.strictEqual(iap._catalog, cached, 'rebinding the same id keeps the cache')
-  assert.strictEqual(served, 2)
-  console.log('  user switch: cached catalog invalidated, same-id rebind keeps it ✓')
+  assert.strictEqual(served, 3)
+  console.log('  user switch: cached catalog invalidated on switch AND adoption ✓')
 }
 
 async function testOnUnsubscribeReleasesBookkeeping () {
@@ -1264,35 +1313,83 @@ async function testCenterHonesty () {
   assert.strictEqual(unsupported.ok, false)
   assert.strictEqual(unsupported.code, 'unsupported')
 
-  // Silence on a V3 build: resolves ok:false, code timeout after the window.
+  // An UNPROVEN classic build never fires the scheme (old catch-alls raise a
+  // native alert on unknown revenuecat:// actions): unsupported immediately.
+  const fired = []
+  const winUnproven = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(winUnproven, 'despia', { set (cmd) { fired.push(cmd) }, configurable: true })
+  global.window = winUnproven
+  global.self = winUnproven
+  iap = freshRequire()
+  const gated = await iap.center()
+  assert.strictEqual(gated.code, 'unsupported')
+  assert.strictEqual(fired.length, 0, 'no scheme fired without bridge proof')
+
+  // Silence on a PROVEN V3 build: resolves ok:false, code timeout.
   const winSilent = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
-  Object.defineProperty(winSilent, 'despia', { set () {}, configurable: true })
+  Object.defineProperty(winSilent, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          winSilent.revenueCatProducts = envelope(3)   // proves the bridge
+          if (typeof winSilent.onRevenueCatProducts === 'function') winSilent.onRevenueCatProducts(winSilent.revenueCatProducts)
+        } // center: silence
+      }, 10)
+    },
+    configurable: true
+  })
   global.window = winSilent
   global.self = winSilent
   iap = freshRequire()
+  await iap.products()
   const timedOut = await iap.center()
   assert.strictEqual(timedOut.ok, false)
   assert.strictEqual(timedOut.code, 'timeout')
+
+  // An AMBIGUOUS V4 probe failure (ack timeout on a build that answers only
+  // at dismissal) must NOT settle early: the later dismissal still wins.
+  const winSlow = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winSlow.dsx = {
+    module: {
+      revenuecat: {
+        center: () => new Promise((resolve, reject) => {
+          reject({ code: 'timeout' })                    // ack timed out...
+          setTimeout(() => {
+            if (typeof winSlow.onRevenueCatCenter === 'function') winSlow.onRevenueCatCenter({ event: 'dismissed' })
+          }, 60)                                         // ...but the sheet was up and closes later
+        })
+      }
+    }
+  }
+  global.window = winSlow
+  global.self = winSlow
+  iap = freshRequire()
+  const lateClose = await iap.center()
+  assert.strictEqual(lateClose.ok, true, 'ambiguous ack failure keeps waiting for the real dismissal')
 
   // The good path: a dismissed event resolves ok:true.
   const winOk = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
   Object.defineProperty(winOk, 'despia', {
     set (cmd) {
-      if (cmd.startsWith('revenuecat://center')) {
-        setTimeout(() => {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          winOk.revenueCatProducts = envelope(3)
+          if (typeof winOk.onRevenueCatProducts === 'function') winOk.onRevenueCatProducts(winOk.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://center')) {
           if (typeof winOk.onRevenueCatCenter === 'function') winOk.onRevenueCatCenter({ event: 'dismissed' })
-        }, 10)
-      }
+        }
+      }, 10)
     },
     configurable: true
   })
   global.window = winOk
   global.self = winOk
   iap = freshRequire()
+  await iap.products()
   const closed = await iap.center()
   assert.strictEqual(closed.ok, true)
   assert.strictEqual(closed.code, null)
-  console.log('  center: unsupported/timeout are honest, dismissal still succeeds ✓')
+  console.log('  center: gated on V3 proof, honest codes, late dismissal never lost ✓')
 }
 
 async function testBuyRejectsUnusableInput () {
