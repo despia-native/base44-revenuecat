@@ -40,7 +40,12 @@ function envelope (runtime) {
 
 function freshRequire () {
   delete require.cache[require.resolve('./index.js')]
-  return require('./index.js')
+  const iap = require('./index.js')
+  // Shrink the native-wait timeouts: these tests simulate silent channels
+  // with real timers, and nobody wants to wait 8-15 s per silence. The
+  // relative ordering (purchase/sheet > reads) is preserved.
+  Object.assign(iap._t, { read: 400, catalog: 400, offerings: 400, history: 400, probe: 400, purchase: 900, sheet: 900 })
+  return iap
 }
 
 async function testWeb () {
@@ -565,6 +570,7 @@ async function testLegacyIntroOfferFidelity () {
   assert.strictEqual(plans.length, 1)
   assert.strictEqual(plans[0].intro.type, 'payg', 'the native payment mode survives, not a cycles guess')
   assert.strictEqual(plans[0].intro.price.text, '$1.99', 'the display string is the truth')
+  assert.strictEqual(plans[0].intro.price.value, null, 'unknown price stays null in the plan shape too, never 0')
   const products = await iap.products()
   assert.strictEqual(products[0].intro.price, null, 'no numeric price is invented')
   assert.strictEqual(products[0].intro.cycles, null, 'no cycle count is invented')
@@ -744,19 +750,40 @@ async function testRedeemStub () {
 
 async function testServer () {
   const calls = []
+  const SUBSCRIBER = {
+    entitlements: {
+      premium: { expires_date: null, product_identifier: 'premium:monthly' },
+      old: { expires_date: '2020-01-01T00:00:00Z' }
+    },
+    first_seen: '2026-01-01T00:00:00Z'
+  }
   global.fetch = async (url, init) => {
-    calls.push({ url, auth: init.headers.Authorization })
+    calls.push({ url, auth: init.headers.Authorization, signal: init.signal })
     if (url.includes('/v1/subscribers/')) {
+      return { ok: true, status: 200, json: async () => ({ subscriber: SUBSCRIBER }) }
+    }
+    if (url.includes('/projects/projBroken/')) {
+      return { ok: false, status: 401, json: async () => ({}) }
+    }
+    if (url.includes('/projects/projLimited/')) {
+      return { ok: false, status: 429, json: async () => ({}) }
+    }
+    if (url.includes('/projects/projMissing/')) {
+      return { ok: false, status: 404, json: async () => ({}) }
+    }
+    if (url.includes('/customers/u404/')) {
+      return { ok: false, status: 404, json: async () => ({}) }
+    }
+    if (url.includes('/projects/projPaged/customers/') && url.includes('active_entitlements')) {
+      if (url.includes('starting_after')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: null }] }) }
+      }
       return {
         ok: true,
         status: 200,
         json: async () => ({
-          subscriber: {
-            entitlements: {
-              premium: { expires_date: null, product_identifier: 'premium:monthly' },
-              old: { expires_date: '2020-01-01T00:00:00Z' }
-            }
-          }
+          items: [{ entitlement_id: 'entl123', expires_at: null }],
+          next_page: '/v2/projects/projPaged/customers/u1/active_entitlements?limit=100&starting_after=entl123'
         })
       }
     }
@@ -764,18 +791,24 @@ async function testServer () {
       return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl123', expires_at: null }] }) }
     }
     if (url.includes('/entitlements?')) {
-      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entl123', lookup_key: 'premium' }] }) }
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entl123', lookup_key: 'premium' }, { id: 'entl2', lookup_key: 'plus' }] }) }
     }
     return { ok: false, status: 404, json: async () => ({}) }
   }
-  delete require.cache[require.resolve('./server.cjs')]
-  const server = require('./server.cjs')
+  function freshServer () {
+    delete require.cache[require.resolve('./server.cjs')]
+    return require('./server.cjs')
+  }
+  let server = freshServer()
 
-  // Zero-secret: public SDK key rides the v1 subscribers endpoint.
+  // Zero-secret: a public SDK key authenticates the v1 subscribers endpoint.
+  // (That endpoint is create-on-read upstream: an unseen id becomes a
+  // customer with no entitlements, so gates still deny correctly.)
   assert.strictEqual(await server.entitled('u1', 'premium', { key: 'appl_pub' }), true)
   assert.strictEqual(await server.entitled('u1', 'old', { key: 'appl_pub' }), false, 'expired entitlement is inactive')
   assert.ok(calls[0].url.includes('/v1/subscribers/u1'))
   assert.strictEqual(calls[0].auth, 'Bearer appl_pub')
+  assert.ok(calls.every((c) => c.signal), 'every request carries an abort signal (timeout)')
 
   // Secret + project: v2 path with the entl->lookup_key join.
   calls.length = 0
@@ -783,12 +816,83 @@ async function testServer () {
   assert.deepStrictEqual(ents, [{ id: 'premium', expires: null }])
   assert.ok(calls[0].url.includes('/v2/projects/proj123/customers/u1/active_entitlements'))
 
-  // Public key + project must NOT attempt v2 (public keys are v1-only).
+  // A public key never attempts v2, with or without a project id: only
+  // sk_... keys are valid there.
   calls.length = 0
   await server.entitled('u1', 'premium', { key: 'appl_pub', project: 'proj123' })
   assert.ok(calls.every((c) => c.url.includes('/v1/')), 'public key stays on v1')
 
-  console.log('  server: public-key v1 path + secret v2 lookup-key join ✓')
+  // v2 404 on the customer with a VALID project: the project-scoped
+  // entitlements list (cached) proves the project id is good, so the
+  // customer is simply unseen → no entitlements, no v1 fallback.
+  calls.length = 0
+  assert.deepStrictEqual(await server.entitlements('u404', { secret: 'sk_test', project: 'proj123' }), [])
+  assert.ok(calls.every((c) => c.url.includes('/v2/')), 'unseen customer stays on v2')
+
+  // v2 404 because the PROJECT id is wrong: the disambiguation read 404s
+  // too → fall back to v1 (and remember), never silently deny a subscriber.
+  calls.length = 0
+  assert.strictEqual(await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' }), true)
+  assert.ok(calls.some((c) => c.url.includes('/v1/subscribers/')), 'wrong project fell back to v1')
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projMissing' })
+  assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'wrong project remembered, straight to v1')
+
+  // v2 pagination: active_entitlements follows next_page.
+  calls.length = 0
+  const paged = await server.entitlements('u1', { secret: 'sk_test', project: 'projPaged' })
+  assert.deepStrictEqual(paged.map((e) => e.id).sort(), ['plus', 'premium'])
+
+  // v2 key/project mismatch (401): falls back to v1 and remembers, so the
+  // second call skips v2 entirely.
+  calls.length = 0
+  assert.strictEqual(await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projBroken' }), true)
+  assert.ok(calls.some((c) => c.url.includes('/v1/subscribers/')), '401 fell back to v1')
+  const v2AttemptsFirst = calls.filter((c) => c.url.includes('/v2/')).length
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projBroken' })
+  assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'broken v2 remembered, straight to v1')
+  assert.strictEqual(v2AttemptsFirst, 1, 'only one v2 probe ever spent')
+
+  // 429 rate limit: surfaces to the caller instead of burning a v1 request.
+  calls.length = 0
+  await assert.rejects(
+    () => server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projLimited' }),
+    (e) => e.status === 429,
+    '429 must throw with .status, not fall back'
+  )
+  assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'no v1 request spent on a rate limit')
+
+  // customer(): raw v1 subscriber snapshot.
+  const snap = await server.customer('u1', { key: 'appl_pub' })
+  assert.strictEqual(snap.first_seen, '2026-01-01T00:00:00Z')
+  assert.strictEqual(await server.customer('', { key: 'appl_pub' }), null, 'falsy user resolves null')
+
+  // Missing key: throws with a pointer to the fix (fail closed).
+  server = freshServer()
+  const savedEnv = {}
+  for (const k of ['RC_KEY', 'RC_SECRET', 'REVENUECAT_PUBLIC_KEY', 'REVENUECAT_SECRET_KEY']) {
+    savedEnv[k] = process.env[k]
+    delete process.env[k]
+  }
+  await assert.rejects(() => server.entitled('u1', 'premium'), /missing RevenueCat API key/)
+
+  // Env resolution: RC_KEY, then the REVENUECAT_* alias.
+  calls.length = 0
+  process.env.RC_KEY = 'appl_env'
+  assert.strictEqual(await server.entitled('u1', 'premium'), true)
+  assert.strictEqual(calls[0].auth, 'Bearer appl_env')
+  delete process.env.RC_KEY
+  calls.length = 0
+  process.env.REVENUECAT_PUBLIC_KEY = 'appl_alias'
+  assert.strictEqual(await server.entitled('u1', 'premium'), true)
+  assert.strictEqual(calls[0].auth, 'Bearer appl_alias')
+  for (const k of Object.keys(savedEnv)) {
+    if (savedEnv[k] === undefined) delete process.env[k]
+    else process.env[k] = savedEnv[k]
+  }
+
+  console.log('  server: v1/v2 paths, honest fallback, pagination, env keys, fail-closed throws ✓')
 }
 
 async function testV4 () {
@@ -1015,6 +1119,293 @@ async function testV4LegacyRetry () {
   console.log('  v4 legacy build: missing_param triggers one synthesized-id retry ✓')
 }
 
+async function testEmptyCustomerEnvelope () {
+  // A build whose `customer` action acks with an empty object must NOT mask
+  // the store history: a live subscriber would read as not entitled. Same
+  // guard the `entitlements` action already has (see 1.4.2).
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({}),   // bare ack, no entitlement data
+        history: () => Promise.resolve([{ productId: 'p1', entitlementId: 'premium', isActive: true, type: 'subscription' }]),
+        entitlements: () => Promise.resolve({ active: [], all: [] })
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const status = await iap.status()
+  assert.deepStrictEqual(status.active, ['premium'], 'empty customer envelope falls through to history')
+  assert.strictEqual(await iap.has('premium'), true)
+
+  // The V3 shape of the same bug: envelope answers {}, history shows active.
+  const fired = []
+  const win3 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win3, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://customer')) {
+          win3.revenueCatCustomer = { ok: true, runtime: 3 }   // no entitlements key
+          if (typeof win3.onRevenueCatCustomer === 'function') win3.onRevenueCatCustomer(win3.revenueCatCustomer)
+        } else if (cmd.startsWith('getpurchasehistory://')) {
+          win3.restoredData = [{ productId: 'p1', entitlementId: 'premium', isActive: true, type: 'subscription' }]
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win3
+  global.self = win3
+  const iap3 = freshRequire()
+  const s3 = await iap3.status()
+  assert.deepStrictEqual(s3.active, ['premium'], 'V3: bare customer ack falls through to history')
+
+  // A REAL empty answer (entitlements reported, none active, no history) is
+  // still an answer: nothing regresses to a timeout.
+  const winEmpty = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winEmpty.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({ ok: true, runtime: 4, entitlements: { active: [], all: ['old'] }, subscriptions: [] }),
+        history: () => Promise.resolve([])
+      }
+    }
+  }
+  global.window = winEmpty
+  global.self = winEmpty
+  const iapEmpty = freshRequire()
+  const sEmpty = await iapEmpty.status()
+  assert.strictEqual(sEmpty.ok, true)
+  assert.deepStrictEqual(sEmpty.active, [])
+  assert.deepStrictEqual(sEmpty.all, ['old'], 'a reporting envelope still wins over empty history')
+
+  // A real envelope with empty entitlements (products not attached / a
+  // consumables-only app) but live subscriptions metadata: history answers
+  // the entitlement question, the envelope's metadata must survive.
+  const winMeta = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winMeta.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: [], all: [] },
+          subscriptions: ['premium:monthly'],
+          management: 'https://play.google.com/store/account/subscriptions'
+        }),
+        history: () => Promise.resolve([{ productId: 'p1', entitlementId: 'premium', isActive: true, type: 'subscription' }])
+      }
+    }
+  }
+  global.window = winMeta
+  global.self = winMeta
+  const iapMeta = freshRequire()
+  const sMeta = await iapMeta.status()
+  assert.deepStrictEqual(sMeta.active, ['premium'], 'history answers entitlements')
+  assert.deepStrictEqual(sMeta.subscriptions, ['premium:monthly'], 'envelope subscriptions metadata survives the fallback')
+  assert.strictEqual(sMeta.management, 'https://play.google.com/store/account/subscriptions', 'manage link survives the fallback')
+  console.log('  empty customer envelope: store history still answers, subscriber keeps access ✓')
+}
+
+async function testSyncNativeAnswerNotLost () {
+  // Regression: the response channel must be registered BEFORE the scheme
+  // fires. A native layer that answers synchronously (same tick as the
+  // window.despia assignment) used to have its answer deleted by the
+  // listener setup, and the call sat on the full timeout.
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      if (cmd.startsWith('revenuecat://customer')) {
+        win.revenueCatCustomer = Object.assign(envelope(3), {
+          entitlements: { active: ['premium'], all: ['premium'] }, subscriptions: []
+        })
+      } else if (cmd.startsWith('getpurchasehistory://')) {
+        win.restoredData = []
+      }
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const t0 = Date.now()
+  const status = await iap.status()
+  assert.deepStrictEqual(status.active, ['premium'])
+  assert.ok(Date.now() - t0 < iap._t.read, 'synchronous native answer resolved before the timeout')
+  console.log('  sync native answer: registered listener wins the race ✓')
+}
+
+async function testCatalogInvalidatedOnUserSwitch () {
+  // Targeted offerings can price users differently: switching identity must
+  // drop the cached catalog exactly like logout() always did.
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  let served = 0
+  win.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => { served++; return Promise.resolve(envelope(4)) },
+        login: () => Promise.resolve({}),
+        whoami: () => Promise.resolve({ app_user_id: 'adopted', is_anonymous: false })
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  // Adoption is an identity change too: a catalog cached while anonymous
+  // must not survive user() (no args) picking up a persisted native login.
+  await iap.plans()
+  assert.ok(iap._catalog, 'catalog cached while anonymous')
+  const adopted = await iap.user()
+  assert.strictEqual(adopted.user, 'adopted')
+  assert.strictEqual(iap._catalog, null, 'identity adoption drops the cached catalog')
+
+  await iap.user('alice')
+  await iap.plans()
+  assert.ok(iap._catalog, 'catalog cached for alice')
+  await iap.user('bob')
+  assert.strictEqual(iap._catalog, null, 'switching users drops the cached catalog')
+  await iap.user('bob')
+  await iap.plans()
+  const cached = iap._catalog
+  await iap.user('bob')                       // same id: cache survives
+  assert.strictEqual(iap._catalog, cached, 'rebinding the same id keeps the cache')
+  assert.strictEqual(served, 3)
+  console.log('  user switch: cached catalog invalidated on switch AND adoption ✓')
+}
+
+async function testOnUnsubscribeReleasesBookkeeping () {
+  // The unsubscribe closure returned by on() must release the package's own
+  // subscription entry, not only the hub listener, or subscribe/unsubscribe
+  // cycles (one per component mount) grow memory forever.
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  for (let i = 0; i < 5; i++) {
+    const stop = iap.on('result', function () {})
+    stop()
+    stop()                                     // double-call stays safe
+  }
+  assert.strictEqual((iap._subs.result || []).length, 0, 'returned unsubscribe releases the entry')
+  const fn = function () {}
+  iap.on('result', fn)
+  iap.off('result', fn)
+  assert.strictEqual(iap._subs.result.length, 0, 'off(event, fn) still works')
+  console.log('  on()/off(): unsubscribe releases all bookkeeping ✓')
+}
+
+async function testCenterHonesty () {
+  // A build without Customer Center must say so immediately, and a silent
+  // native layer must resolve ok:false — never a 30-minute wait that then
+  // reports success.
+  const winNoModule = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winNoModule.dsx = { module: {} }             // bus bound, module excluded
+  global.window = winNoModule
+  global.self = winNoModule
+  let iap = freshRequire()
+  const unsupported = await iap.center()
+  assert.strictEqual(unsupported.ok, false)
+  assert.strictEqual(unsupported.code, 'unsupported')
+
+  // An UNPROVEN classic build never fires the scheme (old catch-alls raise a
+  // native alert on unknown revenuecat:// actions): unsupported immediately.
+  const fired = []
+  const winUnproven = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(winUnproven, 'despia', { set (cmd) { fired.push(cmd) }, configurable: true })
+  global.window = winUnproven
+  global.self = winUnproven
+  iap = freshRequire()
+  const gated = await iap.center()
+  assert.strictEqual(gated.code, 'unsupported')
+  assert.strictEqual(fired.length, 0, 'no scheme fired without bridge proof')
+
+  // Silence on a PROVEN V3 build: resolves ok:false, code timeout.
+  const winSilent = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(winSilent, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          winSilent.revenueCatProducts = envelope(3)   // proves the bridge
+          if (typeof winSilent.onRevenueCatProducts === 'function') winSilent.onRevenueCatProducts(winSilent.revenueCatProducts)
+        } // center: silence
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = winSilent
+  global.self = winSilent
+  iap = freshRequire()
+  await iap.products()
+  const timedOut = await iap.center()
+  assert.strictEqual(timedOut.ok, false)
+  assert.strictEqual(timedOut.code, 'timeout')
+
+  // An AMBIGUOUS V4 probe failure (ack timeout on a build that answers only
+  // at dismissal) must NOT settle early: the later dismissal still wins.
+  const winSlow = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  winSlow.dsx = {
+    module: {
+      revenuecat: {
+        center: () => new Promise((resolve, reject) => {
+          reject({ code: 'timeout' })                    // ack timed out...
+          setTimeout(() => {
+            if (typeof winSlow.onRevenueCatCenter === 'function') winSlow.onRevenueCatCenter({ event: 'dismissed' })
+          }, 60)                                         // ...but the sheet was up and closes later
+        })
+      }
+    }
+  }
+  global.window = winSlow
+  global.self = winSlow
+  iap = freshRequire()
+  const lateClose = await iap.center()
+  assert.strictEqual(lateClose.ok, true, 'ambiguous ack failure keeps waiting for the real dismissal')
+
+  // The good path: a dismissed event resolves ok:true.
+  const winOk = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(winOk, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          winOk.revenueCatProducts = envelope(3)
+          if (typeof winOk.onRevenueCatProducts === 'function') winOk.onRevenueCatProducts(winOk.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://center')) {
+          if (typeof winOk.onRevenueCatCenter === 'function') winOk.onRevenueCatCenter({ event: 'dismissed' })
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = winOk
+  global.self = winOk
+  iap = freshRequire()
+  await iap.products()
+  const closed = await iap.center()
+  assert.strictEqual(closed.ok, true)
+  assert.strictEqual(closed.code, null)
+  console.log('  center: gated on V3 proof, honest codes, late dismissal never lost ✓')
+}
+
+async function testBuyRejectsUnusableInput () {
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  for (const bad of [{}, { product: null }, { product: {} }, '']) {
+    const r = await iap.buy(bad)
+    assert.strictEqual(r.ok, false)
+    assert.strictEqual(r.code, 'missing_param', 'unusable buy() input fails fast: ' + JSON.stringify(bad))
+  }
+  console.log('  buy: unusable input fails fast with missing_param ✓')
+}
+
 ;(async () => {
   console.log('base44-revenuecat smoke tests')
   await testWeb()
@@ -1037,6 +1428,12 @@ async function testV4LegacyRetry () {
   await testRuntimeDetection()
   await testDestructured()
   await testRedeemStub()
+  await testEmptyCustomerEnvelope()
+  await testSyncNativeAnswerNotLost()
+  await testCatalogInvalidatedOnUserSwitch()
+  await testOnUnsubscribeReleasesBookkeeping()
+  await testCenterHonesty()
+  await testBuyRejectsUnusableInput()
   await testServer()
   console.log('all tests passed')
   process.exit(0)

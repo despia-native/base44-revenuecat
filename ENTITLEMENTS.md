@@ -222,7 +222,7 @@ const e = info.entitlements.premium
 e.active        // true while access continues
 e.renews        // false once auto-renew is off, and for lifetime unlocks
 e.expires       // when access ends, null for a lifetime unlock
-e.period        // 'normal' | 'trial' | 'intro' | 'prepaid'
+e.period        // 'normal' | 'trial' | 'intro' | 'promo' | 'prepaid' (null on builds that don't report it)
 e.unsubscribed  // when they cancelled, while still inside the paid period
 e.billingIssue  // set while the store retries a failed payment
 e.store         // 'app_store' | 'play_store' | 'stripe' | 'promotional' | ...
@@ -258,15 +258,29 @@ request arrives:
 
 ```javascript
 // functions/premium.js, runs server-side in Base44
-import { entitled } from 'base44-revenuecat/server'
+import { entitled } from 'npm:base44-revenuecat/server'
 
-const ok = await entitled(user.id, 'premium', { key: RC_KEY })
+// Your PUBLIC SDK key (appl_… / goog_…) from Despia → Integrations →
+// RevenueCat. Configure it here, server-side — never read it from the request.
+const RC_KEY = 'appl_XXXXXXXXXXXX'
+
+let ok = false
+try {
+  ok = await entitled(user.id, 'premium', { key: RC_KEY })
+} catch (e) {
+  // RevenueCat unreachable / rate limited: fail closed, deny the paid action.
+  return Response.json({ error: 'verification unavailable, retry shortly' }, { status: 503 })
+}
 if (!ok) return Response.json({ error: 'premium required' }, { status: 402 })
 ```
 
 Same entitlement id, same string, asked of RevenueCat directly. No webhooks and no subscriptions
 table to keep in sync. The user id must be **identical** to the one you passed to
-`revenuecat.user(id)`, or the server will look up a different customer and correctly say no.
+`revenuecat.user(id)`, or the server will look up a different customer and correctly say no. The
+server helpers throw on network/API failures (unlike the client, which never throws) — always wrap
+them in try/catch and deny on error. The README's
+[server section](README.md#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets)
+covers the secret-key upgrade and every configuration option.
 
 ## Tiers and multiple entitlements
 

@@ -486,6 +486,34 @@
     }
   }
 
+  // Does a customer envelope actually carry entitlement state (as opposed to
+  // a bare ack, e.g. `{}` from a build that answers the action without
+  // implementing it)?
+  function reportsEntitlements (envelope) {
+    if (!envelope) return false
+    if (envelope.details) return true
+    var ents = envelope.entitlements
+    return !!(ents && ((ents.active || []).length || (ents.all || []).length))
+  }
+
+  // When the entitlement answer comes from history/the entitlements read but
+  // a real customer envelope also arrived, keep the envelope's metadata
+  // (active subscriptions, the manage deep link, the identity it named):
+  // falling back for entitlements must not blank fields the envelope carried.
+  function withEnvelopeMeta (status, envelope) {
+    if (!envelope) return status
+    keepProject(envelope)
+    if (Array.isArray(envelope.subscriptions) && envelope.subscriptions.length && !status.subscriptions.length) {
+      status.subscriptions = envelope.subscriptions
+    }
+    if (envelope.management && !status.management) status.management = envelope.management
+    if (envelope.user && !status.user) {
+      status.user = envelope.user
+      status.anonymous = envelope.anonymous !== false
+    }
+    return status
+  }
+
   function customerStatus (envelope, rows) {
     var ents = envelope && envelope.entitlements || {}
     keepProject(envelope)
@@ -517,7 +545,9 @@
   var UNIT_DAYS = { day: 1, week: 7, month: 30, year: 365 }
 
   function nestPrice (value, text, currency) {
-    return { value: value || 0, text: text || '', currency: currency || null }
+    // null stays null: the legacy V3 offerings channel reports no numeric
+    // intro price, and "unknown" must not render as "$0.00".
+    return { value: value == null ? null : value, text: text || '', currency: currency || null }
   }
 
   function nestPeriod (iso, unit, value) {
@@ -602,9 +632,23 @@
 
   // ── the API ──────────────────────────────────────────────────────────────
 
+  // Internal timeout table (ms), read at call time. Not part of the public
+  // API: it exists so the test suite can shrink the long native waits.
+  var T = {
+    read: 8000,        // identity / customer / entitlements reads
+    catalog: 15000,    // unified products read
+    offerings: 10000,  // legacy V3 offerings channel
+    history: 15000,    // store purchase history
+    probe: 20000,      // paywall / Customer Center presentation acks
+    purchase: 600000,  // a store purchase sheet can sit open for minutes
+    sheet: 1800000     // paywall / Customer Center outcome window
+  }
+
   var iap = {
 
     debug: false,
+
+    _t: T,
 
     // The RevenueCat app user id used for every purchase, paywall, and
     // entitlement call. Set it once with user(id).
@@ -643,7 +687,12 @@
     _identity: function (raw, anon) {
       var self = this
       var id = raw == null || raw === '' ? null : String(raw)
-      if (id && anon === false && !self._user) self._user = id
+      if (id && anon === false && !self._user) {
+        self._user = id
+        // Adoption is an identity change like any other: a catalog cached for
+        // the anonymous user must not price the adopted account.
+        self._catalog = null
+      }
       var user = self._user || (anon === false ? id : null)
       return { id: id || user, user: user, anonymous: !user, registered: !!user }
     },
@@ -662,7 +711,7 @@
       if (arguments.length === 0 || id === undefined) {
         var rt = runtime()
         if (rt === 4) {
-          return v4call('whoami', {}, 8000).then(function (d) {
+          return v4call('whoami', {}, T.read).then(function (d) {
             return self._identity(d && d.app_user_id, !!(d && d.is_anonymous))
           }).catch(function () { return self._identity(null, void 0) })
         }
@@ -671,8 +720,12 @@
           // older builds route unknown revenuecat:// actions into the
           // purchase catch-all, which must never happen for a read.
           return chained('user', function () {
+            // Register the response channel BEFORE firing: awaitChannel clears
+            // the window variable on setup, so a synchronously-answering
+            // native layer must never beat the listener.
+            var wait = awaitChannel('revenueCatUser', 'onRevenueCatUser', T.read)
             fire('revenuecat://whoami')
-            return awaitChannel('revenueCatUser', 'onRevenueCatUser', 8000)
+            return wait
           }).then(function (envelope) {
             if (!envelope) return self._identity(null, void 0)
             keepProject(envelope)
@@ -681,7 +734,11 @@
         }
         return Promise.resolve(self._identity(null, void 0))
       }
-      self._user = id == null || id === '' ? null : String(id)
+      var next = id == null || id === '' ? null : String(id)
+      // Targeted offerings / placements can price users differently: a cached
+      // catalog must never survive an identity change.
+      if (next !== self._user) self._catalog = null
+      self._user = next
       self._v3bound = false
       if (self._user && runtime() === 4) {
         // Forward-compatible session bind, fire-and-forget: newer builds carry
@@ -689,7 +746,7 @@
         // older builds reject/timeout silently and we stay in per-call
         // identity mode (still correctly attributed). Never block app boot on
         // the probe.
-        v4call('login', { external_id: self._user }, 8000).catch(function () {})
+        v4call('login', { external_id: self._user }, T.read).catch(function () {})
       }
       if (self._user && runtime() === 3) {
         v3bind()   // fires only once a unified envelope has proven the build
@@ -704,8 +761,8 @@
 
     // Clear the current identity. On newer builds this also rotates the
     // native RevenueCat user to a fresh anonymous id; on older builds the
-    // package stops sending the id (see SPEC.md §3), apps with accounts
-    // should gate on their own auth state too:
+    // package simply stops sending the id, apps with accounts should gate on
+    // their own auth state too:
     //   const premium = user && await revenuecat.has('premium')
     logout: function () {
       this._user = null
@@ -715,7 +772,7 @@
         // Fire-and-forget: newer builds rotate the native RevenueCat user to
         // a fresh anonymous id; older builds ignore it. The local clear above
         // is what stops this package from sending the old id either way.
-        v4call('logout', {}, 8000).catch(function () {})
+        v4call('logout', {}, T.read).catch(function () {})
       }
       if (runtime() === 3 && this._v3) {
         fire('revenuecat://logout')   // build proven, rotate the native user too
@@ -762,19 +819,19 @@
         return Promise.resolve({ ok: false, current: null, offerings: [], products: [], platform: 'web', runtime: 0, user: self._user, project: self.project, error: 'Not running inside a Despia app.', code: 'web' })
       }
       if (rt === 4) {
-        return v4call('catalog', { external_id: self._user, offering: offering }, 8000)
+        return v4call('catalog', { external_id: self._user, offering: offering }, T.read)
           .then(keepProject)
           .catch(function (err) {
             // Older V4 build without `catalog`. Try `offerings` next, which
             // still carries offering and package placement, and only then the
             // flat `products` action.
             warn('catalog unavailable (' + (err && err.code) + '), falling back to offerings()')
-            return v4call('offerings', {}, 8000).then(function (data) {
+            return v4call('offerings', {}, T.read).then(function (data) {
               var envelope = mapV4Offerings(data)
               if (!envelope.products.length) throw { code: 'empty' }
               return envelope
             }).catch(function () {
-              return v4call('products', {}, 8000).then(function (rows) {
+              return v4call('products', {}, T.read).then(function (rows) {
                 var products = (Array.isArray(rows) ? rows : []).map(mapV4Product)
                 return { ok: true, current: null, offerings: [], products: products, platform: os(), runtime: 4, user: self._user, project: self.project, error: null, code: null }
               }).catch(function (e2) {
@@ -807,8 +864,9 @@
         if (self._user) q.push('external_id=' + encodeURIComponent(self._user))
         if (offering) q.push('offering=' + encodeURIComponent(offering))
         if (q.length) cmd += '?' + q.join('&')
+        var wait = awaitChannel('revenueCatProducts', 'onRevenueCatProducts', T.catalog)
         fire(cmd)
-        return awaitChannel('revenueCatProducts', 'onRevenueCatProducts', 15000)
+        return wait
       }).then(function (envelope) {
         if (envelope) return keepProject(envelope)
         // Older classic build without the unified products read. The legacy
@@ -826,8 +884,9 @@
       var self = this
       return chained('offerings', function () {
         try { if (W) { delete W.offeringsError } } catch (e) {}
+        var wait = awaitChannel('offeringsData', 'onRevenueCatOfferings', T.offerings)
         fire('revenuecat://offerings' + (offering ? '?offering=' + encodeURIComponent(offering) : ''))
-        return awaitChannel('offeringsData', 'onRevenueCatOfferings', 10000)
+        return wait
       }).then(function (rows) {
         var err = null
         // This channel's callback is invoked with NO argument, so the payload
@@ -889,7 +948,12 @@
       var self = this
       var rt = runtime()
       var offer = options && options.offer ? String(options.offer) : null
-      if (!product) return Promise.resolve(rejection({ code: 'missing_param', message: 'buy(product) needs a product or plan id.' }, 'purchase'))
+      // Accept a plan/product id (string) or a whole plan object; anything
+      // else must fail here, not reach the store as "[object Object]".
+      var pid = product && typeof product === 'object' ? product.product : product
+      if (pid == null || pid === '' || (typeof pid !== 'string' && typeof pid !== 'number')) {
+        return Promise.resolve(rejection({ code: 'missing_param', message: 'buy(product) needs a product or plan id.' }, 'purchase'))
+      }
       if (rt === 0) return Promise.resolve(webResult('purchase'))
       return this._resolve(product).then(function (productId) {
         if (rt === 4) {
@@ -901,12 +965,12 @@
           var args = { product: productId }
           if (self._user) args.external_id = self._user
           if (offer) args.offer = offer
-          return v4call('purchase', args, 600000)
+          return v4call('purchase', args, T.purchase)
             .catch(function (err) {
               if (self._user || !err || err.code !== 'missing_param') throw err
               var legacy = { external_id: self._anon(), product: productId }
               if (offer) legacy.offer = offer
-              return v4call('purchase', legacy, 600000)
+              return v4call('purchase', legacy, T.purchase)
             })
             .then(function (data) {
               return {
@@ -928,10 +992,11 @@
           if (ext) parts.push('external_id=' + encodeURIComponent(ext))
           parts.push('product=' + encodeURIComponent(productId))
           if (offer) parts.push('offer=' + encodeURIComponent(offer))
-          fire('revenuecat://purchase?' + parts.join('&'))
-          return awaitChannel('revenueCatResult', 'onRevenueCatResult', 600000, function (r) {
+          var wait = awaitChannel('revenueCatResult', 'onRevenueCatResult', T.purchase, function (r) {
             return r && r.source === 'purchase'
           })
+          fire('revenuecat://purchase?' + parts.join('&'))
+          return wait
         }).then(function (result) {
           if (!result) return rejection({ code: 'timeout', message: 'No purchase result from the native layer.' }, 'purchase')
           return result
@@ -950,7 +1015,7 @@
       return chained('result', function () {
         return new Promise(function (resolve) {
           var done = false
-          var wait = awaitChannel('revenueCatResult', 'onRevenueCatResult', 1800000, function (r) {
+          var wait = awaitChannel('revenueCatResult', 'onRevenueCatResult', T.sheet, function (r) {
             return r && r.source === 'paywall'
           })
           function settle (result) {
@@ -971,21 +1036,21 @@
             // once the legacy way with a synthesized id.
             var args = { offering: offering }
             if (self._user) args.external_id = self._user
-            v4call('paywall', args, 20000)
+            v4call('paywall', args, T.probe)
               .catch(function (err) {
                 // A build that predates the `paywall` spelling still carries
                 // the legacy `launchPaywall` action.
                 if (err && (err.code === 'no_module' || err.code === 'call_failed' || err.code === 'unknown_action')) {
-                  return v4call('launchPaywall', args, 20000)
+                  return v4call('launchPaywall', args, T.probe)
                 }
                 throw err
               })
               .catch(function (err) {
                 if (!self._user && err && err.code === 'missing_param') {
-                  return v4call('paywall', { external_id: self._anon(), offering: offering }, 20000)
+                  return v4call('paywall', { external_id: self._anon(), offering: offering }, T.probe)
                     .catch(function (e2) {
                       if (e2 && (e2.code === 'no_module' || e2.code === 'call_failed' || e2.code === 'unknown_action')) {
-                        return v4call('launchPaywall', { external_id: self._anon(), offering: offering }, 20000)
+                        return v4call('launchPaywall', { external_id: self._anon(), offering: offering }, T.probe)
                       }
                       throw e2
                     })
@@ -1011,20 +1076,44 @@
       var self = this
       var rt = runtime()
       if (rt === 0) return Promise.resolve(webResult('center'))
+      // Same deferred gate as whoami/redeem: an unproven classic build routes
+      // unknown revenuecat:// actions into its license-gated purchase
+      // catch-all, which can raise a native alert. Only fire once an envelope
+      // has proven the bridge; before that, answer unsupported immediately.
+      if (rt === 3 && !self._v3) {
+        return Promise.resolve({ ok: false, source: 'center', platform: os(), runtime: 3, error: null, code: 'unsupported' })
+      }
       return new Promise(function (resolve) {
+        var done = false
+        function settle (result) {
+          if (done) return
+          done = true
+          stop()
+          clearTimeout(cap)
+          resolve(result)
+        }
         var stop = hub('onRevenueCatCenter').add(function (event) {
           if (event && event.event === 'dismissed') {
-            stop()
-            clearTimeout(cap)
-            resolve({ ok: true, source: 'center', platform: os(), runtime: rt, error: null, code: null })
+            settle({ ok: true, source: 'center', platform: os(), runtime: rt, error: null, code: null })
           }
         })
         var cap = setTimeout(function () {
-          stop()
-          resolve({ ok: true, source: 'center', platform: os(), runtime: rt, error: null, code: 'timeout' })
-        }, 1800000)
+          settle({ ok: false, source: 'center', platform: os(), runtime: rt, error: 'No Customer Center result from the native layer.', code: 'timeout' })
+        }, T.sheet)
         if (rt === 4) {
-          v4call('center', { external_id: self._user }, 20000).catch(function () {})
+          v4call('center', { external_id: self._user }, T.probe).catch(function (err) {
+            // A build that definitively cannot present must say so now, not
+            // report success after sitting on the timeout for the full
+            // window. An AMBIGUOUS failure (e.g. the presentation ack timing
+            // out on a build that only answers at dismissal) keeps waiting
+            // for the dismissed event; the outer cap still bounds it.
+            var code = err && err.code
+            if (code === 'no_module') {
+              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: 'unsupported' })
+            } else if (code === 'call_failed' || code === 'unknown_action' || code === 'missing_param') {
+              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: code })
+            }
+          })
         } else {
           fire(self._user ? 'revenuecat://center?external_id=' + encodeURIComponent(self._user) : 'revenuecat://center')
         }
@@ -1039,33 +1128,49 @@
       if (rt === 0) return Promise.resolve(emptyStatus('web', 'Not running inside a Despia app.'))
       if (rt === 4) {
         return Promise.all([
-          v4call('customer', { external_id: self._user }, 8000).catch(function () { return null }),
-          v4call('history', {}, 8000).catch(function () { return null }),
+          v4call('customer', { external_id: self._user }, T.read).catch(function () { return null }),
+          v4call('history', {}, T.read).catch(function () { return null }),
           // The dedicated entitlements read, for builds that predate the
           // unified `customer` envelope: real RevenueCat entitlement state
           // beats inferring it from the device's store history.
-          v4call('entitlements', {}, 8000).catch(function () { return null })
+          v4call('entitlements', {}, T.read).catch(function () { return null })
         ]).then(function (parts) {
           var envelope = parts[0]
           var rows = parts[1]
           var ents = parts[2]
-          if (envelope) return customerStatus(envelope, rows)
+          // A customer envelope only outranks the other reads when it
+          // actually reports entitlement state. A build whose `customer`
+          // action acks with an empty object must fall through to the
+          // entitlements read / store history, or a live subscriber reads
+          // as not entitled — the same guard the entitlements read gets
+          // below.
+          if (envelope && reportsEntitlements(envelope)) return customerStatus(envelope, rows)
           // Prefer the entitlements read only when it actually reports
           // something. An empty answer is a real state (a project with no
           // entitlements mapped), but it must not outrank the device's store
           // history, or a live subscriber reads as not entitled.
-          if (ents && ((ents.active || []).length || (ents.all || []).length)) return entitlementsStatus(ents, rows)
+          if (ents && ((ents.active || []).length || (ents.all || []).length)) return withEnvelopeMeta(entitlementsStatus(ents, rows), envelope)
+          if (rows && rows.length) return withEnvelopeMeta(historyStatus(rows), envelope)
+          // Nothing reported anywhere: a real empty envelope is still the
+          // best answer (it carries user/anonymous/management metadata).
+          if (envelope) return customerStatus(envelope, rows)
           if (rows) return historyStatus(rows)
           if (ents) return entitlementsStatus(ents, rows)
           return emptyStatus('timeout', 'No response from the native layer.')
         })
       }
       return chained('customer', function () {
+        var wait = awaitChannel('revenueCatCustomer', 'onRevenueCatCustomer', T.read)
         fire(self._user ? 'revenuecat://customer?external_id=' + encodeURIComponent(self._user) : 'revenuecat://customer')
-        return awaitChannel('revenueCatCustomer', 'onRevenueCatCustomer', 8000)
+        return wait
       }).then(function (envelope) {
         if (envelope) {
           return self.restore().then(function (r) {
+            // An envelope with no entitlement data (an old build acking the
+            // read with an empty object) must not outrank a store history
+            // that shows an active subscription; the envelope's metadata
+            // (subscriptions, manage link, identity) still rides along.
+            if (!reportsEntitlements(envelope) && r && r.active && r.active.length) return withEnvelopeMeta(r, envelope)
             return customerStatus(envelope, r && r.purchases || [])
           })
         }
@@ -1081,13 +1186,14 @@
       var rt = runtime()
       if (rt === 0) return Promise.resolve(emptyStatus('web', 'Not running inside a Despia app.'))
       if (rt === 4) {
-        return v4call('history', {}, 15000)
+        return v4call('history', {}, T.history)
           .then(historyStatus)
           .catch(function (err) { return emptyStatus(err && err.code || 'error', err && err.message || null) })
       }
       return chained('history', function () {
+        var wait = awaitChannel('restoredData', null, T.history)
         fire('getpurchasehistory://')
-        return awaitChannel('restoredData', null, 15000)
+        return wait
       }).then(function (rows) {
         if (rows === undefined) return emptyStatus('timeout', 'No purchase history from the native layer.')
         return historyStatus(rows)
@@ -1174,7 +1280,7 @@
       var unsupported = { ok: false, supported: false, source: 'redeem', platform: os(), runtime: rt, error: null, code: 'unsupported' }
       if (rt === 0 || os() === 'android') return Promise.resolve(unsupported)
       if (rt === 4) {
-        return v4call('redeem', {}, 8000)
+        return v4call('redeem', {}, T.read)
           .then(function () { return { ok: true, supported: true, source: 'redeem', platform: os(), runtime: 4, error: null, code: null } })
           .catch(function () { return unsupported })
       }
@@ -1183,12 +1289,13 @@
       // a native alert. Only fire once an envelope has proven the bridge.
       if (!self._v3) return Promise.resolve(unsupported)
       return chained('result', function () {
-        fire('revenuecat://redeem')
         // Newer builds ack presentation on the result channel; silence means
         // the build predates the redeem bridge.
-        return awaitChannel('revenueCatResult', 'onRevenueCatResult', 8000, function (r) {
+        var wait = awaitChannel('revenueCatResult', 'onRevenueCatResult', T.read, function (r) {
           return r && r.source === 'redeem'
         })
+        fire('revenuecat://redeem')
+        return wait
       }).then(function (result) {
         if (!result) return unsupported
         return { ok: result.ok !== false, supported: true, source: 'redeem', platform: os(), runtime: 3, error: result.error || null, code: result.code || null }
@@ -1209,8 +1316,14 @@
         : null
       if (!cb) { warn("unknown event '" + event + "'"); return function () {} }
       var remove = hub(cb).add(fn)
-      ;(this._subs[event] = this._subs[event] || []).push({ fn: fn, remove: remove })
-      return remove
+      var list = (this._subs[event] = this._subs[event] || [])
+      var entry = { fn: fn, remove: remove }
+      list.push(entry)
+      return function () {
+        remove()
+        var at = list.indexOf(entry)
+        if (at !== -1) list.splice(at, 1)
+      }
     },
 
     off: function (event, fn) {

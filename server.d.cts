@@ -1,9 +1,7 @@
-// Fallback type declarations for consumers on moduleResolution "node"/"node10",
-// which ignores the exports map and resolves 'base44-revenuecat/server' by
-// file lookup. Consumers on node16/bundler resolution get server.d.mts /
-// server.d.cts via the exports map instead. Named exports only: the CommonJS
-// entry has no .default at runtime (default imports still work through
-// esModuleInterop's synthetic default).
+// Type definitions for require('base44-revenuecat/server'): server-side
+// RevenueCat subscriber verification for Node backends (CommonJS entry).
+// Note: the CommonJS entry has NO default export — use the named exports
+// (or destructure the require result).
 
 export interface ServerOptions {
   /**
@@ -44,6 +42,11 @@ export interface ActiveEntitlement {
  * @throws When no API key is configured, on RevenueCat non-2xx answers
  * (including 429 rate limits), and on network errors/timeouts. Catch and
  * deny (fail closed).
+ * @example
+ * const { entitled } = require('base44-revenuecat/server')
+ * let ok = false
+ * try { ok = await entitled(user.id, 'premium', { key: RC_KEY }) } catch (e) { ok = false }
+ * if (!ok) return deny()
  */
 export function entitled(user: string, entitlement: string, opts?: ServerOptions): Promise<boolean>
 
@@ -51,13 +54,17 @@ export function entitled(user: string, entitlement: string, opts?: ServerOptions
  * All ACTIVE entitlements for a user (expiry enforced server-side).
  *
  * @throws Same conditions as {@link entitled}.
+ * @example
+ * const active = await entitlements(user.id, { key: RC_KEY })
+ * // [{ id: 'premium', expires: '2026-09-01T00:00:00.000Z' }]
  */
 export function entitlements(user: string, opts?: ServerOptions): Promise<ActiveEntitlement[]>
 
 /**
- * Raw RevenueCat subscriber snapshot (v1 shape) for advanced use. Like every
- * v1 subscriber read, this creates the customer if RevenueCat has never seen
- * the id. Resolves null only for a falsy user id.
+ * Raw RevenueCat subscriber snapshot (v1 shape) for advanced use:
+ * subscriptions, non_subscriptions, first_seen, management_url, etc.
+ * Like every v1 subscriber read, this creates the customer if RevenueCat
+ * has never seen the id. Resolves null only for a falsy user id.
  *
  * @throws Same conditions as {@link entitled}.
  */

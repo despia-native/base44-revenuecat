@@ -5,13 +5,21 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: ['18', '20', '22']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,3 +32,16 @@ jobs:
           node -e "require('./index.js')"
           node -e "require('./server.cjs')"
           node --input-type=module -e "import('./server.mjs')"
+
+  types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Type-check the consumer fixtures (node16 ESM + CJS, and legacy node10 resolution)
+        run: npm run test:types
+      - name: Lint the published package shape
+        run: npx --yes publint
