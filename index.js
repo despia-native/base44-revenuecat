@@ -1084,7 +1084,9 @@
       // bridge with the catalog read (an action every classic build has, and
       // one this package already fires unconditionally) and decide on facts.
       if (rt === 3 && !self._v3) {
-        return self.offers().then(function () {
+        // The probe must never turn center() into a rejecting promise: the
+        // client contract is that every call resolves.
+        return self.offers().catch(function () { return null }).then(function () {
           if (!self._v3) {
             return { ok: false, source: 'center', platform: os(), runtime: 3, error: null, code: 'unsupported' }
           }
