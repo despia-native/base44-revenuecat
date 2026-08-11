@@ -10,6 +10,38 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
+## [1.7.2] - 2026-08-11
+
+### Fixed
+
+- **The 1.7.0 misspelled-offering refusal did not work on classic Android.**
+  `paywall('winbak')` still presented the **default** offering there, which is
+  the exact full-price-under-a-promo's-name outcome 1.7.0 set out to stop. The
+  refusal depends on the catalog read reporting not-found, and the four native
+  runtimes disagree about that: classic iOS answers `ok:false` with
+  `offeringNotFoundError`, but classic Android returns `ok:true` with an empty
+  offerings list and no code, which the package read as "nothing to check" and
+  let through. (Both V4 runtimes return the same empty-list shape, but the
+  package was already deciding the scope itself on that path, so V4 was never
+  affected.) Scoping a catalog envelope to a named offering is now one shared
+  step applied on **every** runtime, so all four answer the same thing.
+- **The legacy offerings channel's not-found spelling is now recognised.** That
+  channel reports `offering_not_found` on iOS and `OFFERING_NOT_FOUND` on
+  Android, neither of which equalled the code the package branches on, so a
+  missing offering read as unverifiable on the oldest builds too. The native
+  spellings are canonicalised on the way in.
+- An unlabelled offerings list is still never treated as absence, unchanged
+  from 1.7.0: the legacy channel cannot name what it returned, and refusing
+  there would refuse every named offering on classic builds.
+
+### Tests
+
+- The offering-scope invariants ran only against a simulated V4 build, which is
+  why the classic Android shape went unnoticed. Added a classic-runtime case
+  covering both platforms with the real per-platform envelopes: the refusal is
+  asserted, and so is the absence of any `launchPaywall` scheme for an offering
+  that does not exist. Verified failing without the fix, on Android only.
+
 ## [1.7.1] - 2026-08-11
 
 ### Documentation

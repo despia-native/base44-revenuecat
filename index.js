@@ -422,6 +422,61 @@
     }
   }
 
+  // Native spellings of "that offering does not exist", lowercased. The classic
+  // offerings channel answers `offering_not_found` on iOS and
+  // `OFFERING_NOT_FOUND` on Android, and the Android paywall result says
+  // `OfferingNotFoundError` - none of which equal the code the rest of this
+  // package branches on.
+  var NOT_FOUND_CODES = ['offering_not_found', 'offeringnotfounderror']
+
+  // Narrow a catalog envelope to ONE named offering, and answer not-found when
+  // the build can name offerings and this one is not among them.
+  //
+  // The native layers do not agree here, so the package has to. V3 iOS decides
+  // it itself (buildRcProductsEnvelope answers `offeringNotFoundError` for a
+  // filter that matched nothing), but V3 Android and both V4 runtimes return
+  // ok:true with an EMPTY offerings list and no code. That reads as "nothing to
+  // check", which lets a misspelled offering through to the native paywall -
+  // and every runtime silently presents the DEFAULT offering there, so a
+  // full-price paywall appears where a promo was intended. Deciding it here
+  // makes all four runtimes answer the same thing.
+  //
+  // Two shapes must NOT be refused. Both are "no evidence" rather than absence:
+  //   - an UNLABELLED list. The legacy V3 offerings channel cannot name what it
+  //     returned and labels its single offering `id: ''` even when the native
+  //     side honoured the filter, so refusing there would refuse EVERY named
+  //     offering on classic builds and simply lose the sale.
+  //   - an envelope that already failed, which is passed through untouched
+  //     apart from canonicalising the native spellings above.
+  function scopeToOffering (envelope, offering) {
+    if (!offering || !envelope) return envelope
+    if (envelope.ok === false) {
+      if (NOT_FOUND_CODES.indexOf(String(envelope.code || '').toLowerCase()) !== -1) {
+        envelope.code = 'offeringNotFoundError'
+      }
+      return envelope
+    }
+    var list = envelope.offerings
+    if (!list) return envelope
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && !list[i].id) return envelope
+    }
+    var kept = list.filter(function (o) { return o && String(o.id) === String(offering) })
+    // Never widen: a request for one offering that matches nothing answers
+    // not-found, and never the whole catalog (which would price a user off the
+    // wrong offering).
+    envelope.offerings = kept
+    envelope.products = kept.length
+      ? (kept[0].packages || []).map(function (p) { return p.product })
+      : []
+    if (!kept.length) {
+      envelope.ok = false
+      envelope.error = 'No offering found for ' + offering + '.'
+      envelope.code = 'offeringNotFoundError'
+    }
+    return envelope
+  }
+
   // Status from the V4 `entitlements` action, whose rows are RC-flavored
   // ({ id, is_active, product_id, ... }) rather than the unified envelope.
   function entitlementsStatus (data, rows) {
@@ -1025,22 +1080,10 @@
             })
           })
           .then(function (envelope) {
-            // The fallback reads ignore the filter, so apply it here. It must
-            // never widen: a request for one offering that matches nothing
-            // answers not-found, exactly like the native catalog action, and
-            // never the whole catalog (which would price a user off the wrong
-            // offering). A native not-found envelope is left alone.
-            if (offering && envelope && envelope.ok !== false && envelope.offerings) {
-              var kept = envelope.offerings.filter(function (o) { return o.id === offering })
-              envelope.offerings = kept
-              envelope.products = kept.length ? kept[0].packages.map(function (p) { return p.product }) : []
-              if (!kept.length) {
-                envelope.ok = false
-                envelope.error = 'No offering found for ' + offering + '.'
-                envelope.code = 'offeringNotFoundError'
-              }
-            }
-            return self._cache(envelope, offering)
+            // The fallback reads ignore the filter, and the native `catalog`
+            // action answers ok:true with an empty offerings list rather than
+            // not-found, so the scope is decided here either way.
+            return self._cache(scopeToOffering(envelope, offering), offering)
           })
       }
       return chained('products', function () {
@@ -1059,7 +1102,15 @@
         // paywall can still be rendered on those binaries.
         warn('products query timed out, trying the legacy offerings read (rebuild in Despia for the full catalog API)')
         return self._v3Offerings(offering)
-      }).then(function (envelope) { return self._cache(envelope, offering) })
+      }).then(function (envelope) {
+        // Classic builds need the same scoping the V4 branch above applies.
+        // V3 iOS answers not-found natively, V3 Android does not - it returns
+        // ok:true with an empty offerings list - and without this the paywall
+        // would present a misspelled offering at default pricing there. The
+        // legacy offerings channel is unlabelled and is left alone by
+        // scopeToOffering(), so classic builds keep opening named paywalls.
+        return self._cache(scopeToOffering(envelope, offering), offering)
+      })
     },
 
     // The legacy classic-runtime catalog read. Answers on window.offeringsData
