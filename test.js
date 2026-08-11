@@ -1174,6 +1174,363 @@ async function testCatalogShapeInvariants () {
   console.log('  catalog shape: unique ids, stripped prefixes, store-confirmed product, offers forwarded ✓')
 }
 
+// ── the resolution matrix ────────────────────────────────────────────────
+// The five "a paying subscriber reads as not entitled" releases were each a
+// single cell of this table, found one at a time. Testing the scenarios that
+// were once bugs catches regressions; it does not catch the sixth instance.
+// So generate the whole cross product and assert the property instead:
+//
+//   IF ANY SOURCE IN THE LADDER SAYS POSITIVE, THE ANSWER IS POSITIVE.
+//
+// The table is generated, not enumerated: adding a 6th source to SOURCES adds
+// its four answers to every combination automatically.
+const ANSWERS = ['POSITIVE', 'NEGATIVE', 'EMPTY', 'ERROR']
+
+// Each source knows how to produce a native reply for a given answer. `null`
+// for ERROR means "this call rejects".
+const SOURCES = [
+  {
+    name: 'customer',
+    reply: {
+      POSITIVE: () => ({ ok: true, entitlements: { active: ['premium'], all: ['premium'] }, user: 'u1', anonymous: false }),
+      // Knows about the entitlement, reports it inactive. This is the case
+      // that must NOT outrank a lower source saying active.
+      NEGATIVE: () => ({ ok: true, entitlements: { active: [], all: ['premium'] }, user: 'u1', anonymous: false }),
+      // A bare ack: implemented the action, carries no entitlement state.
+      EMPTY: () => ({}),
+      ERROR: null
+    }
+  },
+  {
+    name: 'entitlements',
+    reply: {
+      POSITIVE: () => ({ active: [{ id: 'premium', product_id: 'p' }], all: [{ id: 'premium' }] }),
+      NEGATIVE: () => ({ active: [], all: [{ id: 'premium' }] }),
+      EMPTY: () => ({ active: [], all: [] }),
+      ERROR: null
+    }
+  },
+  {
+    name: 'history',
+    reply: {
+      POSITIVE: () => ([{ productId: 'premium_monthly', entitlementId: 'premium', isActive: true, type: 'subscription' }]),
+      NEGATIVE: () => ([{ productId: 'premium_monthly', entitlementId: 'premium', isActive: false, type: 'subscription' }]),
+      EMPTY: () => ([]),
+      ERROR: null
+    }
+  }
+]
+
+function cartesian (lists) {
+  return lists.reduce(
+    (acc, list) => acc.flatMap((row) => list.map((v) => row.concat([v]))),
+    [[]]
+  )
+}
+
+async function testResolutionMatrix () {
+  const combos = cartesian(SOURCES.map(() => ANSWERS))
+  let checked = 0
+  let positives = 0
+
+  for (const combo of combos) {
+    const mod = {}
+    SOURCES.forEach((src, i) => {
+      const answer = combo[i]
+      const make = src.reply[answer]
+      mod[src.name] = make
+        ? () => Promise.resolve(make())
+        : () => Promise.reject({ code: 'unknown_action' })
+    })
+
+    const win = {
+      navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
+      __dsxWire: {}, localStorage: null,
+      dsx: { module: { revenuecat: mod } }
+    }
+    global.window = win
+    global.self = win
+    const iap = freshRequire()
+
+    const label = SOURCES.map((s, i) => `${s.name}=${combo[i]}`).join(' ')
+    const anyPositive = combo.indexOf('POSITIVE') !== -1
+
+    const status = await iap.status()
+    const has = await iap.has('premium')
+
+    // THE PROPERTY. Every historical bug is a cell where this failed.
+    if (anyPositive) {
+      assert.strictEqual(
+        has, true,
+        `a POSITIVE source must never be outranked into a denial [${label}]`
+      )
+      assert.ok(
+        status.active.indexOf('premium') !== -1,
+        `active[] must carry the entitlement some source reported active [${label}]`
+      )
+      positives++
+    } else {
+      // Nothing anywhere said active, so denying is the only correct answer.
+      assert.strictEqual(
+        has, false,
+        `no source reported an active entitlement, so the gate must deny [${label}]`
+      )
+    }
+
+    // Rule 2: an errored source is skipped, never read as a denial. Every
+    // combination must still produce a well-formed status rather than throw.
+    assert.strictEqual(typeof status.ok, 'boolean', `status stays well-formed [${label}]`)
+    assert.ok(Array.isArray(status.active) && Array.isArray(status.all), `arrays stay arrays [${label}]`)
+    checked++
+  }
+
+  // Guard the generator itself: if a refactor makes cartesian() return a
+  // trivial table, the property above would pass vacuously.
+  assert.strictEqual(checked, Math.pow(ANSWERS.length, SOURCES.length), 'every cell ran')
+  assert.ok(positives > 0 && positives < checked, 'the table contains both outcomes')
+  console.log(`  resolution matrix: ${checked} source/answer combinations, any-POSITIVE-wins holds ✓`)
+}
+
+// Rule 5, as its own property: a source that did not decide still contributes
+// its metadata. This is 1.6.0 behaviour and regressing it is silent.
+async function testNonDecidingSourceKeepsMetadata () {
+  const win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
+    __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      // Envelope carries metadata but no entitlement state: it must not
+      // decide, and its metadata must survive onto the deciding answer.
+      customer: () => Promise.resolve({
+        ok: true, user: 'u1', anonymous: false,
+        management: 'https://apps.apple.com/manage',
+        subscriptions: [{ id: 'premium_monthly' }]
+      }),
+      entitlements: () => Promise.reject({ code: 'unknown_action' }),
+      history: () => Promise.resolve([
+        { productId: 'premium_monthly', entitlementId: 'premium', isActive: true, type: 'subscription' }
+      ])
+    } } }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const s = await iap.status()
+  assert.deepStrictEqual(s.active, ['premium'], 'the deciding source answered')
+  assert.strictEqual(s.management, 'https://apps.apple.com/manage', 'manage link rides along from the non-deciding envelope')
+  assert.deepStrictEqual(s.subscriptions, [{ id: 'premium_monthly' }], 'subscriptions ride along')
+  assert.strictEqual(s.user, 'u1', 'identity rides along')
+  console.log('  non-deciding source still contributes metadata (rule 5) ✓')
+}
+
+// The matrix asserts grant-vs-deny. These pin the EMPTY/NEGATIVE distinction
+// itself, which the matrix cannot see because both outcomes deny: what differs
+// is WHICH source decides, and therefore which metadata the caller gets back.
+// That matters on the denial path specifically — a lapsed subscriber is denied
+// and still needs the `management` link and the entitlement ids to resubscribe.
+async function testEmptyVersusNegativeClassification () {
+  const build = (mod) => {
+    const win = {
+      navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
+      __dsxWire: {}, localStorage: null,
+      dsx: { module: { revenuecat: mod } }
+    }
+    global.window = win
+    global.self = win
+    return freshRequire()
+  }
+  const INACTIVE = [{ productId: 'premium_monthly', entitlementId: 'premium', isActive: false, type: 'subscription' }]
+
+  // 1. `details: {}` is a bare ack, not an authoritative "none active". It is
+  //    EMPTY, so the store history — which does know about premium — decides.
+  let iap = build({
+    customer: () => Promise.resolve({ ok: true, details: {}, subscriptions: [{ id: 's1' }] }),
+    entitlements: () => Promise.reject({ code: 'unknown_action' }),
+    history: () => Promise.resolve(INACTIVE)
+  })
+  let s = await iap.status()
+  assert.deepStrictEqual(s.all, ['premium'], 'an empty details map must not decide; history knows the entitlement')
+  assert.deepStrictEqual(s.subscriptions, [{ id: 's1' }], 'the non-deciding envelope still contributes metadata')
+
+  // 2. A details map WITH content and nothing active is a real NEGATIVE: the
+  //    build is reporting state, and it outranks the lower rungs.
+  iap = build({
+    customer: () => Promise.resolve({ ok: true, details: { premium: { active: false } }, subscriptions: [{ id: 's1' }] }),
+    entitlements: () => Promise.reject({ code: 'unknown_action' }),
+    history: () => Promise.resolve(INACTIVE)
+  })
+  s = await iap.status()
+  assert.deepStrictEqual(s.active, [], 'nothing is active either way')
+  assert.deepStrictEqual(s.all, [], 'a populated details map decides, so the envelope shape answers')
+
+  // 3. History rows that are all inactive are NEGATIVE, not EMPTY: the device
+  //    knows about this entitlement, so it outranks an empty entitlements read.
+  iap = build({
+    customer: () => Promise.reject({ code: 'unknown_action' }),
+    entitlements: () => Promise.resolve({ active: [], all: [] }),
+    history: () => Promise.resolve(INACTIVE)
+  })
+  s = await iap.status()
+  assert.deepStrictEqual(s.all, ['premium'], 'inactive history rows still report which entitlement is known')
+  assert.strictEqual(await iap.has('premium'), false, 'and it is still a denial')
+
+  console.log('  EMPTY vs NEGATIVE: bare acks never decide, real state always does ✓')
+}
+
+// ── money-path invariants ────────────────────────────────────────────────
+// This class does not fail loudly and does not fail in your own account: the
+// user sees one price and is charged another. Stated as properties over the
+// whole catalog rather than as the two cases that were once bugs.
+async function testMoneyPathInvariants () {
+  const PROMO = {
+    id: 'premium:monthly:promo', sku: 'premium', plan: 'monthly', type: 'subscription',
+    title: 'Premium Monthly (Black Friday)', desc: 'Half off', price: 4.99, priceString: '$4.99',
+    currency: 'USD', period: 'P1M', periodUnit: 'month', periodCount: 1,
+    intro: null, offering: 'blackfriday', package: '$rc_monthly', packageType: 'monthly'
+  }
+  const catalog = (offering) => {
+    const all = {
+      default: { id: 'default', current: true, packages: [
+        { id: '$rc_monthly', type: 'monthly', product: PRODUCT },
+        { id: '$rc_annual', type: 'annual', product: ANNUAL }
+      ] },
+      blackfriday: { id: 'blackfriday', current: false, packages: [
+        { id: '$rc_monthly', type: 'monthly', product: PROMO }
+      ] }
+    }
+    // Deliberately IGNORES the offering filter, like a build that predates
+    // native filtering: the client-side narrowing in offers() is then the only
+    // thing standing between a typo and the default offering's pricing, which
+    // is exactly the protection worth testing.
+    const picked = Object.values(all)
+    return {
+      ok: true, provider: 'revenuecat', platform: 'ios', runtime: 4,
+      project: 'proj123', user: 'u1', anonymous: false, current: 'default',
+      offerings: picked,
+      products: picked.flatMap((o) => o.packages.map((p) => p.product)),
+      error: null, code: null
+    }
+  }
+  let bought = null
+  let calls = 0
+  const build = () => {
+    const win = {
+      navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
+      __dsxWire: {}, localStorage: null,
+      dsx: { module: { revenuecat: {
+        catalog: ({ offering } = {}) => { calls++; return Promise.resolve(catalog(offering)) },
+        purchase: (args) => { bought = args.product; return Promise.resolve({ ok: true, product_id: args.product }) },
+        customer: () => Promise.reject({ code: 'unknown_action' }),
+        entitlements: () => Promise.reject({ code: 'unknown_action' }),
+        history: () => Promise.resolve([])
+      } } }
+    }
+    global.window = win
+    global.self = win
+    return freshRequire()
+  }
+
+  // INVARIANT 1: render/charge identity. Over EVERY plan in a rendered
+  // offering, the product buy() resolves is the product the price came from.
+  for (const offering of ['default', 'blackfriday']) {
+    const iap = build()
+    const plans = await iap.plans(offering)
+    assert.ok(plans.length > 0, `${offering} rendered at least one plan`)
+    for (const p of plans) {
+      bought = null
+      await iap.buy(p.id)
+      assert.strictEqual(
+        bought, p.product,
+        `buy(${p.id}) must charge the product its price.text was rendered from [${offering}]`
+      )
+      // And the price shown belongs to that same product, not a sibling.
+      const src = catalog(offering).products.find((x) => x.id === p.product)
+      assert.strictEqual(p.price.text, src.priceString, `rendered price belongs to the charged product [${offering}]`)
+    }
+  }
+
+  // INVARIANT 2: offering isolation. A plan rendered from one offering can
+  // never be purchased out of another. The promo and the full price share the
+  // package id '$rc_monthly', which is exactly how a promo price gets shown
+  // while the full price is charged.
+  let iap = build()
+  const promo = await iap.plans('blackfriday')
+  assert.strictEqual(promo[0].price.text, '$4.99', 'promo offering renders the promo price')
+  bought = null
+  await iap.buy('$rc_monthly')
+  assert.strictEqual(bought, 'premium:monthly:promo', 'a bare package id buys from the RENDERED offering, not the default one')
+
+  // The reverse direction, to prove it is scope and not luck.
+  iap = build()
+  await iap.plans('default')
+  bought = null
+  await iap.buy('$rc_monthly')
+  assert.strictEqual(bought, 'premium:monthly', 'rendering the default offering charges the default price')
+
+  // INVARIANT 3: a misspelled offering never widens scope. plans() errors and
+  // paywall() must not quietly fall back to the default offering's pricing.
+  iap = build()
+  const typo = await iap.plans('blackfridy')
+  assert.deepStrictEqual(typo, [], 'a misspelled offering renders no plans')
+  const pw = await iap.paywall('blackfridy')
+  assert.strictEqual(pw.ok, false, 'a misspelled offering does not present a paywall')
+  assert.strictEqual(pw.code, 'offeringNotFoundError', 'and it says why, instead of showing default pricing')
+
+  // A real offering still presents.
+  iap = build()
+  const ok = await iap.paywall('blackfriday')
+  assert.notStrictEqual(ok.code, 'offeringNotFoundError', 'a real offering is still presented')
+
+  // And the check is answered from an already-rendered catalog when there is
+  // one, so the common path costs no extra native call. Rendering the full
+  // catalog first proves the typo is caught from cache, not from a re-read.
+  iap = build()
+  await iap.plans()
+  const before = calls
+  const cached = await iap.paywall('blackfridy')
+  assert.strictEqual(cached.code, 'offeringNotFoundError', 'a cached catalog refuses a missing offering too')
+  assert.strictEqual(calls, before, 'and answers from cache without another catalog read')
+
+  // INVARIANT 4: unverifiable is not the same as missing. A build whose
+  // catalog read degrades to the flat product list reports no offerings at
+  // all — that is no evidence the requested offering is absent, and refusing
+  // there would cost every sale on those binaries. It must still present.
+  const degraded = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
+    __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      catalog: () => Promise.reject({ code: 'unknown_action' }),
+      offerings: () => Promise.reject({ code: 'unknown_action' }),
+      products: () => Promise.resolve([{ id: 'premium:monthly', price: 9.99, priceString: '$9.99' }]),
+      purchase: (args) => Promise.resolve({ ok: true, product_id: args.product }),
+      customer: () => Promise.reject({ code: 'unknown_action' }),
+      entitlements: () => Promise.reject({ code: 'unknown_action' }),
+      history: () => Promise.resolve([])
+    } } }
+  }
+  global.window = degraded
+  global.self = degraded
+  iap = freshRequire()
+  // plans() already refuses here — it cannot know which flat products belong
+  // to the named offering — so paywall() refusing the same input is the
+  // consistent answer, and the alternative is showing default pricing under a
+  // promo's name.
+  const degradedPlans = await iap.plans('blackfriday')
+  assert.deepStrictEqual(degradedPlans, [], 'a degraded catalog cannot render a named offering')
+  const unverifiable = await iap.paywall('blackfriday')
+  assert.strictEqual(
+    unverifiable.code, 'offeringNotFoundError',
+    'and paywall() refuses exactly what plans() refuses, rather than falling back to default pricing'
+  )
+
+  // The bare paywall still works on that same build: no offering was named,
+  // so there is nothing to mismatch.
+  const bare = await iap.paywall()
+  assert.notStrictEqual(bare.code, 'offeringNotFoundError', 'the default paywall is unaffected')
+
+  console.log('  money path: render/charge identity, offering isolation, no silent widening ✓')
+}
+
 async function testStatusSourceInvariants () {
   // historyStatus: only rows the store says are ACTIVE may appear in active[].
   const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
@@ -1658,6 +2015,77 @@ async function testV2DenialIsConfirmed () {
   assert.strictEqual(await server.entitled('grace_user', 'premium', { secret: 'sk_x', project: 'p1', confirmDenials: false }), false, 'confirmDenials:false takes v2 at its word')
   assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'and spends no v1 request')
   console.log('  v2 denials are confirmed against v1, so the two paths never disagree against a customer ✓')
+}
+
+// §4: the opt-in answer cache. The asymmetry is the whole point, and it is
+// exactly the kind of thing that rots silently if untested — caching denials
+// would be invisible in every happy-path test and would lock out customers
+// who just paid.
+async function testServerAnswerCache () {
+  const { entitled, entitlements } = require('./server.cjs')
+  const FUTURE = new Date(Date.now() + 365 * 86400000).toISOString()
+  let reads = 0
+  const PEOPLE = {
+    payer: { premium: { expires_date: FUTURE, product_identifier: 'p' } },
+    freeloader: {}
+  }
+  global.fetch = async (url) => {
+    const m = url.match(/\/v1\/subscribers\/([^/?]+)/)
+    const who = m ? decodeURIComponent(m[1]) : null
+    reads++
+    return { ok: true, status: 200, json: async () => ({ subscriber: { entitlements: PEOPLE[who] || {} } }) }
+  }
+  const KEY = { key: 'appl_cachetest' }
+
+  // Off by default: no cacheMs means every check is a real read.
+  reads = 0
+  await entitled('payer', 'premium', KEY)
+  await entitled('payer', 'premium', KEY)
+  assert.strictEqual(reads, 2, 'the cache is off unless asked for')
+
+  // A grant is cached: the second check spends no request.
+  reads = 0
+  assert.strictEqual(await entitled('payer', 'premium', { ...KEY, cacheMs: 30000 }), true)
+  assert.strictEqual(reads, 1, 'first check reads')
+  assert.strictEqual(await entitled('payer', 'premium', { ...KEY, cacheMs: 30000 }), true)
+  assert.strictEqual(reads, 1, 'second check is served from cache')
+
+  // THE ASYMMETRY. A denial is never cached, so a customer who subscribes
+  // between two checks is not held behind the TTL.
+  reads = 0
+  assert.strictEqual(await entitled('newbie', 'premium', { ...KEY, cacheMs: 30000 }), false)
+  assert.strictEqual(reads, 1, 'a denial reads')
+  PEOPLE.newbie = { premium: { expires_date: FUTURE, product_identifier: 'p' } }   // they just paid
+  assert.strictEqual(
+    await entitled('newbie', 'premium', { ...KEY, cacheMs: 30000 }), true,
+    'a customer who just subscribed is granted immediately, never held behind a cached denial'
+  )
+  assert.strictEqual(reads, 2, 'because the denial was never stored')
+
+  // The TTL actually expires rather than serving stale forever. Fresh id and
+  // key so no entry from the blocks above is in play.
+  PEOPLE.ttluser = { premium: { expires_date: FUTURE, product_identifier: 'p' } }
+  reads = 0
+  await entitlements('ttluser', { key: 'appl_ttl', cacheMs: 5 })
+  assert.strictEqual(reads, 1, 'first read populates')
+  await new Promise((r) => setTimeout(r, 25))
+  await entitlements('ttluser', { key: 'appl_ttl', cacheMs: 5 })
+  assert.strictEqual(reads, 2, 'an expired grant is re-read, not served stale')
+
+  // Entries are per-credential: a different key must not read another
+  // project's cached answer.
+  reads = 0
+  await entitled('payer', 'premium', { key: 'appl_one', cacheMs: 30000 })
+  await entitled('payer', 'premium', { key: 'appl_two', cacheMs: 30000 })
+  assert.strictEqual(reads, 2, 'a different key never reuses another project\'s answer')
+
+  // Sandbox and production are separate answers for the same id.
+  reads = 0
+  await entitled('payer', 'premium', { key: 'appl_three', cacheMs: 30000 })
+  await entitled('payer', 'premium', { key: 'appl_three', cacheMs: 30000, sandbox: true })
+  assert.strictEqual(reads, 2, 'sandbox does not answer from the production cache')
+
+  console.log('  server cache: opt-in, grants only, denials never held, per-credential ✓')
 }
 
 async function testServerHardening () {
@@ -2336,10 +2764,15 @@ async function testBuyRejectsUnusableInput () {
   await testEventDelivery()
   await testCatalogShapeInvariants()
   await testStatusSourceInvariants()
+  await testResolutionMatrix()
+  await testEmptyVersusNegativeClassification()
+  await testMoneyPathInvariants()
+  await testNonDecidingSourceKeepsMetadata()
   await testServer()
   await testServerIdentityAndMatching()
   await testServerCacheAndEncoding()
   await testV2DenialIsConfirmed()
+  await testServerAnswerCache()
   await testServerHardening()
   console.log('all tests passed')
   // Give any late rejection a turn to surface before exiting green.

@@ -62,6 +62,22 @@ export interface ServerOptions {
    * rather take v2 at its word.
    */
   confirmDenials?: boolean
+
+  /**
+   * Cache a POSITIVE entitlement answer for this many milliseconds. Off by
+   * default (`0`), and opt-in per call, e.g. `{ cacheMs: 30000 }`.
+   *
+   * Without it, an app that gates every request spends one RevenueCat request
+   * per request and scales linearly into rate limiting — and a 429 throws,
+   * which fail-closed handling turns into a 503 for a paying customer.
+   *
+   * Only grants are cached, never denials. Caching a grant briefly costs at
+   * most a few seconds of access after a cancellation; caching a denial would
+   * leave a customer who just subscribed locked out until the TTL expired.
+   * Entries are keyed by credential, sandbox flag and user id, so two
+   * projects — or a key rotation — never share an answer.
+   */
+  cacheMs?: number
 }
 
 export interface ActiveEntitlement {

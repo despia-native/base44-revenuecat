@@ -12,6 +12,72 @@ gates fail closed.)
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI was not running at all.** The `workflow_dispatch` trigger added in 1.6.1
+  was written `workflow_dispatch::`, which parses as an event named
+  `workflow_dispatch:`. GitHub rejects a workflow containing an unknown event
+  outright rather than ignoring the bad key, so *no* run was produced for any
+  trigger — push and pull_request included. This is why the 1.6.1 pull request
+  reported no checks; it was never an Actions incident.
+- **A misspelled offering no longer shows default pricing.** `paywall('winbak')`
+  resolved by presenting the **default** offering, because the native layer
+  falls back silently — so a full-price paywall appeared where a discount was
+  intended, and nothing reported that it had happened. The offering is now
+  checked against the catalog before presenting, answering
+  `offeringNotFoundError` exactly as `plans()` and `offers()` already did. The
+  check is served from an already-rendered catalog when there is one, so the
+  common path costs no extra request, and a catalog read that throws still
+  presents — an unverifiable offering must not cost every sale.
+
+### Changed
+
+- **One resolver decides entitlement truth, with the invariant written once.**
+  "A paying subscriber reads as not entitled" had appeared five times across
+  1.4.2–1.6.1, each at a different rung of the resolution ladder, because the
+  precedence rule lived as prose at four sites instead of as code at one. Every
+  source now classifies as POSITIVE / NEGATIVE / EMPTY / ERROR and every read
+  goes through one `resolveEntitlement()`: an EMPTY answer never terminates
+  resolution, an ERROR is skipped rather than read as a denial, and a NEGATIVE
+  from a higher-precedence source can no longer outrank a POSITIVE from a lower
+  one. That last rule generalizes 1.6.1's `confirmDenials` from the v2 path to
+  every rung. Adding a source is now adding a rung, not adding a branch.
+
+### Added
+
+- **`{ cacheMs }` on the server helpers**, opt-in and off by default. Without
+  it every gated request is one RevenueCat request, which scales linearly into
+  429s — and a 429 throws, which fail-closed handling turns into a 503 for a
+  paying customer. **Positive answers only:** caching a grant costs at most
+  `cacheMs` of access after a cancellation, while caching a denial would lock
+  out a customer who just subscribed. Keyed by credential, sandbox flag and
+  user id, and bounded so a long-lived process cannot grow it without limit.
+- **A weekly live canary** (`canary.js`, `.github/workflows/canary.yml`) that
+  checks the server helpers against a real RevenueCat project on both the
+  public-key and secret-key paths, plus sandbox. The rest of the suite
+  simulates RevenueCat and therefore cannot notice RevenueCat changing, while
+  `X-Is-Sandbox` and v2's `active_entitlements` are both undocumented and
+  load-bearing. Unconfigured repositories report "not configured" and pass.
+- **Publishing with provenance** (`.github/workflows/release.yml`), plus
+  automatic GitHub Releases whose notes come from this changelog. Refuses to
+  publish when the tag and `package.json` disagree, and re-runs every gate
+  against the tagged commit.
+
+### Tests
+
+- **The resolution matrix is generated, not enumerated:** every source crossed
+  with every answer, 64 combinations, asserting one property — *if any source
+  reports POSITIVE, the resolved answer is POSITIVE*. Each of the five
+  historical bugs is one cell of that table, and so is the next one. Adding a
+  sixth source adds its four answers automatically.
+- **Money-path invariants as properties**, not as the two cases that were once
+  bugs: over every plan in every offering, `buy()` charges the product whose
+  price was rendered; a plan rendered from one offering can never be purchased
+  out of another; a misspelled offering never widens scope.
+- Mutation sweep extended to 41 cases covering the new resolver and the paywall
+  check. 40 killed; the one survivor is an equivalent mutant (two spellings of
+  "no cached evidence" that reach the same refusal on every path).
+
 ### Documentation
 
 - **Which key goes where.** New README section covering the setup question that

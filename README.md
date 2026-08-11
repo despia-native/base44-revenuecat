@@ -31,6 +31,8 @@ Every **client** call returns a promise and **never throws**. In the Base44 brow
 
 **Requirements:** the client runs anywhere Base44 runs (it's dependency-free UMD). The `/server` entry needs a runtime with global `fetch`: Base44 backend functions (Deno) work as-is, Node needs **Node 18+**.
 
+> **Use 1.6.1 or newer — earlier versions have money-affecting bugs.** On **1.6.0 and below**, `plans()` mixed products from every offering, so a promotional price could be rendered while the full price was charged, and a short plan id could be repointed between render and purchase. On **1.5.x and below**, a subscriber could read as *not* entitled on paths where an empty answer outranked a truer one. Both classes are silent: they do not throw, and they do not reproduce in your own account. `npm install base44-revenuecat@latest`.
+
 ---
 
 ## Why this exists
@@ -51,7 +53,7 @@ You do **not** need webhooks, a subscriptions table, or native code. The two que
 1. Create a free account at [app.revenuecat.com](https://app.revenuecat.com) (free until well past your first revenue).
 2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key. *Shipping Android only? Skip this step — see [Which key goes where](#which-key-goes-where).*
 3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON. *Shipping iOS only? Skip this step.*
-4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching products, tiers, lifetime unlocks and consumables are all covered in [the entitlements guide](ENTITLEMENTS.md).
+4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching subscriptions, tiers and lifetime unlocks is covered in [the entitlements guide](ENTITLEMENTS.md) — as is why **consumable credit packs are the one thing you do not attach to an entitlement**.
 5. **Product catalog → Offerings**: group products into an offering (the `default` offering is what paywalls show), e.g. a monthly and an annual package.
 6. Optional but recommended: design your paywall in **Paywalls**. `revenuecat.paywall()` presents it natively, priced in each user's own currency, and you can restyle it from the dashboard without an app update.
 7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL). A platform's key only exists once you have added that platform's app in step 2 or 3 — if you see no `goog_…`, the Play Store app has not been added yet.
@@ -290,7 +292,7 @@ if (info.entitlements.premium?.unsubscribed) {
 
 > **`buy(id, { offer })` is not implemented natively yet.** The package forwards the offer id, but no current build reads it: the native purchase action accepts only the product and the user id, so the store applies its default offer logic and your targeted price is silently *not* used. The option is accepted for forward compatibility, not because it works — don't build a discount flow on it. Use an offering, as above.
 
-> **A misspelled offering id shows your default offering.** `paywall('winbak')` does not fail: on both iOS and Android the native layer falls back to presenting your **default** offering, so a full-price paywall appears where you meant a discount. Copy offering ids exactly. (`plans(id)` and `offers(id)` behave differently on purpose: an unknown id there answers `offeringNotFoundError` with no products rather than widening to the full catalog.)
+> **A misspelled offering id is refused, not silently widened.** `paywall('winbak')` resolves `{ ok: false, code: 'offeringNotFoundError' }` without presenting anything, rather than showing your **default** offering's full price where you meant a discount. The native layer itself does fall back, so the package checks the offering against the catalog before presenting — from an already-rendered catalog when there is one, so the common path costs no extra request. `plans(id)` and `offers(id)` answer the same `offeringNotFoundError`, so all three refuse the same inputs. Two consequences worth knowing: a build whose catalog read has degraded to a flat product list cannot name offerings at all, so a *named* offering is refused there (the bare `paywall()` is unaffected), and if the catalog read itself throws, the paywall is presented anyway — a flaky read must not cost every sale.
 
 Tag manual-only Google offers `rc-ignore-offer` in RevenueCat so automatic selection never turns your win-back price into the acquisition price. This matters *more* while explicit-offer purchase is unimplemented: the tag is the only thing keeping a retention price out of the default selection. And if you use `revenuecat.paywall()`, RevenueCat Paywalls render configured trials, intro offers, and promotional offers for you, with no offer code at all.
 
@@ -475,11 +477,52 @@ Because the frontend used `revenuecat.user(user.id)` and the function uses `base
 
 **Optional upgrade (secret key):** pass `{ secret: secrets.get('RC_SECRET'), project: secrets.get('RC_PROJECT') }` (a `sk_…` key from RevenueCat → API keys, stored in Base44 secrets) to ride RevenueCat's v2 API with project scoping and documented rate limits (480 customer-info requests/min per key; v1 publishes no figure). The v2 customer read does not create customers. Entitlements are matched by their human lookup key (`premium`) on both paths, and if v2 rejects the key or project (401/403/404) the check falls back to v1 automatically and remembers the verdict.
 
+### Rate limits, and sizing a launch
+
+Every gated request is one RevenueCat request unless you cache. That is the
+most likely way a working integration stops working under load, so here are the
+numbers rather than "higher limits":
+
+| Path | Published limit |
+|---|---|
+| v2 (`sk_…` secret key) | **480 customer-info requests/minute per key** — roughly 8/second |
+| v1 (public `appl_…`/`goog_…` key) | RevenueCat publishes no figure |
+
+Eight requests a second is a real ceiling for a server that checks entitlement
+on every request: ~480 gated requests/minute is one active user hitting eight
+endpoints a second, or a few hundred users browsing normally. Past it you get
+`429`, `entitled()` throws, and fail-closed handling turns that into a `503`
+for customers who have paid.
+
+Two things keep you under it:
+
+- **Cache positive answers.** `{ cacheMs: 30000 }` serves a grant from memory
+  for 30 seconds. Only grants are cached, never denials — a customer who
+  subscribes mid-session is never held behind the TTL, while a cancellation
+  costs at most `cacheMs` of extra access. Off by default, because the right
+  value depends on how much post-cancellation access you will tolerate.
+- **Check once per request, not once per gate.** Resolve entitlement at the top
+  of a backend function and pass the boolean down, rather than calling
+  `entitled()` in three places on one request.
+
+```javascript
+// One read per user per 30s, instead of one per request.
+const ok = await entitled(user.id, 'premium', { key: RC_KEY, cacheMs: 30000 })
+```
+
+**On retrying a 429:** `entitled()` does **not** retry — deliberately. It
+surfaces `.status` and `.retryAfter` and lets you decide, because a server-side
+gate is usually inside a request whose own deadline is shorter than the interval
+RevenueCat asks you to wait, and a hidden retry would spend that budget without
+telling you. Back off at the layer that knows the deadline, and prefer `cacheMs`
+to retrying at all.
+
 **Configuration details** (all three functions accept the same options):
 
 - Resolution order: explicit `{ key | secret | project }` → env `RC_KEY` / `RC_SECRET` / `RC_PROJECT` → env `REVENUECAT_PUBLIC_KEY` / `REVENUECAT_SECRET_KEY` / `REVENUECAT_PROJECT_ID`.
 - `secret` wins over `key` when both are set. Which API path runs is decided by the key's own prefix — only `sk_…` keys ever use v2; an `sk_…` key placed in `RC_KEY` still unlocks v2, and a public key in `RC_SECRET` still works on v1.
 - `{ timeout: ms }` bounds each RevenueCat request (default 10 s); a hung connection aborts and throws instead of hanging your function.
+- `{ cacheMs: 30000 }` caches a positive answer for that long (off by default). Grants only — never denials, so a customer who just subscribed is never held behind the TTL. See [Rate limits](#rate-limits-and-sizing-a-launch).
 - `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases — required while testing, see [Testing](#testing). Off in production. A sandbox check always uses RevenueCat's v1 API even if you configured a secret key and project id: `X-Is-Sandbox` is a v1 header and v2 has no documented sandbox support, so routing a tester through v2 would deny every sandbox purchase. Production checks are unaffected.
 - **A v2 "not entitled" is double-checked.** On the secret-key path, RevenueCat's `active_entitlements` decides who is active — but its rules for grace periods and other still-granting states aren't documented, and it has been seen returning nothing for a customer v1 reports as entitled. So when v2 lists nothing for a customer it knows, the check confirms against v1 before denying. Granting wrongly costs a little revenue; denying a paying customer costs the customer. That's one extra request **only** on the about-to-deny path — a positive answer and an unknown customer both cost nothing extra. Pass `{ confirmDenials: false }` to take v2 at its word if your traffic is mostly never-subscribed users.
 - **Errors carry detail.** The thrown `Error` has `.status` (the HTTP status), and on a `429` also `.retryAfter` in seconds when RevenueCat sends a `Retry-After` header — so you can back off for the interval the API actually asked for:
@@ -570,6 +613,38 @@ Using the base44-revenuecat npm package:
 const testing = Deno.env.get('RC_SANDBOX') === 'true'
 const ok = await entitled(user.id, 'premium', { key: RC_KEY, sandbox: testing })
 ```
+
+## Versioning policy
+
+`base44-revenuecat` follows [semantic versioning](https://semver.org/). The
+history moves fast — 1.4.2 to 1.6.1 inside a week — so here is what a bump
+actually means for you, because "it's semver" does not tell you whether an
+upgrade is safe:
+
+| Bump | What it can contain | Safe to take without reading? |
+|---|---|---|
+| **Patch** (1.6.1 → 1.6.2) | Bug fixes. A gate that wrongly denied may start granting, since that direction is a fix, not a break. No API removals, no renames, no new required config. | Yes |
+| **Minor** (1.6.x → 1.7.0) | New methods, new optional options, new fields on returned objects. Everything that worked keeps working and keeps its shape. | Yes |
+| **Major** (1.x → 2.0.0) | Removals, renames, changed return shapes, a raised minimum Node version. | Read the changelog first |
+
+Three commitments that hold across every version inside a major:
+
+- **Client calls never throw.** A method may gain a new `code` value, never a
+  rejection. The `/server` helpers are the deliberate exception and always
+  throw, so backend gates fail closed.
+- **A newer package on an older Despia build degrades, it does not break.**
+  Native capabilities are probed at runtime, so you never have to match a
+  package version against a compiled binary, and upgrading this package never
+  requires a rebuild.
+- **Fields are added, not repurposed.** An existing field keeps its meaning and
+  its type. New information arrives as a new field, so reading one defensively
+  is enough.
+
+The one thing a patch release deliberately *does* change is behaviour that was
+wrong about money — a paying customer who read as not entitled, or a price that
+was rendered from one product and charged from another. Those are shipped as
+patches on purpose: leaving them behind a major version would mean the safest
+upgrade path is the one that keeps the bug.
 
 ## Troubleshooting
 
