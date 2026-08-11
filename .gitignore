@@ -1,0 +1,7 @@
+# Mutation-sweep scratch files
+*.bak
+
+# npm pack output
+*.tgz
+
+node_modules/
