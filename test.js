@@ -1591,6 +1591,78 @@ async function testMoneyPathInvariants () {
   )
   legacyResult.catch(() => {})
 
+  // INVARIANT 6: the classic runtimes disagree about a misspelled offering, and
+  // the package has to settle it. V3 iOS answers `offeringNotFoundError` from
+  // buildRcProductsEnvelope; V3 Android has no such branch and returns ok:true
+  // with an EMPTY offerings list and no code. Reading that as "nothing to
+  // check" presented the paywall, and every native runtime silently falls back
+  // to the DEFAULT offering - full price under a promo's name. This is the one
+  // shape INVARIANT 3 never covered, because it runs against a V4 build.
+  for (const platform of ['android', 'ios']) {
+    const classic = {
+      navigator: { userAgent: 'Mozilla/5.0 despia-' + platform }, native_os: platform,
+      localStorage: null
+    }
+    const sent = []
+    Object.defineProperty(classic, 'despia', {
+      set (cmd) {
+        sent.push(cmd)
+        setTimeout(() => {
+          if (!cmd.startsWith('revenuecat://products')) return
+          const wanted = /offering=([^&]*)/.exec(cmd)
+          const id = wanted ? decodeURIComponent(wanted[1]) : ''
+          const full = envelope(3)
+          if (!id || id === 'default') {
+            classic.revenueCatProducts = full
+          } else if (platform === 'android') {
+            // The real d-android shape: the loop matches nothing, and the
+            // envelope ships ok:true with both arrays empty.
+            classic.revenueCatProducts = Object.assign({}, full, {
+              platform: 'android', offerings: [], products: []
+            })
+          } else {
+            // The real d-ios shape: an explicit refusal.
+            classic.revenueCatProducts = Object.assign({}, full, {
+              ok: false, offerings: [], products: [],
+              error: 'No offering found for ' + id + '.', code: 'offeringNotFoundError'
+            })
+          }
+          if (typeof classic.onRevenueCatProducts === 'function') {
+            classic.onRevenueCatProducts(classic.revenueCatProducts)
+          }
+        }, 10)
+      },
+      get () { return '' },
+      configurable: true
+    })
+    global.window = classic
+    global.self = classic
+    iap = freshRequire()
+
+    const missed = await iap.paywall('blackfridy')
+    assert.strictEqual(missed.ok, false, `V3 ${platform}: a misspelled offering does not present`)
+    assert.strictEqual(
+      missed.code, 'offeringNotFoundError',
+      `V3 ${platform}: and says why, rather than falling through to default pricing`
+    )
+    assert.ok(
+      !sent.some((u) => u.indexOf('launchPaywall') !== -1),
+      `V3 ${platform}: no paywall scheme is fired for an offering that does not exist`
+    )
+
+    // The real offering still opens: the refusal is scoped, not a blanket ban
+    // on named offerings for classic builds.
+    iap = freshRequire()
+    sent.length = 0
+    const opened = iap.paywall('default')
+    await new Promise((r) => setTimeout(r, 700))
+    assert.ok(
+      sent.some((u) => u.indexOf('launchPaywall') !== -1),
+      `V3 ${platform}: a real offering is still presented`
+    )
+    opened.catch(() => {})
+  }
+
   console.log('  money path: render/charge identity, offering isolation, no silent widening ✓')
 }
 
