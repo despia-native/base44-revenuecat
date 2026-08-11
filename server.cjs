@@ -32,6 +32,9 @@
 // { sandbox: true } (or set RC_SANDBOX=true): RevenueCat answers with
 // PRODUCTION purchases only unless the X-Is-Sandbox header is set, so without
 // it a sandbox purchase makes the client say entitled and the server say not.
+// That header belongs to the v1 API, and v2 has no documented equivalent, so
+// a sandbox check always uses the v1 path even when a secret key and project
+// id are configured. Production checks are unaffected.
 // `secret` wins over `key` when both are set; which API path runs is decided
 // by the key's own prefix (only sk_... keys may use v2), not by which option
 // or variable carried it.
@@ -102,10 +105,12 @@ async function rcFetch (url, c) {
   // after the timeout and let the error surface (fail closed).
   const signal = typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(c.timeout) : undefined
   const headers = { Authorization: 'Bearer ' + c.secret, 'Content-Type': 'application/json' }
-  // RevenueCat returns PRODUCTION purchases only unless this header is set:
-  // without it a sandbox/TestFlight purchase is invisible here, so the client
-  // says entitled and the server says not. Opt in while testing.
-  if (c.sandbox) headers['X-Is-Sandbox'] = 'true'
+  // X-Is-Sandbox is a v1 header. Without it the v1 subscriber read returns
+  // PRODUCTION purchases only, so a sandbox/TestFlight purchase is invisible
+  // and the client says entitled while the server says not. It is NOT part of
+  // the v2 contract, so don't send it there: v2 decides what an active
+  // entitlement is on its own.
+  if (c.sandbox && url.indexOf(V1 + '/') === 0) headers['X-Is-Sandbox'] = 'true'
   // NOTE: X-Platform is deliberately NOT sent. It updates the customer's
   // last_seen field, and a server-side verification call is not the customer
   // using the app: stamping it would corrupt that signal.
@@ -116,6 +121,14 @@ async function rcFetch (url, c) {
 function httpError (version, res) {
   const err = new Error(`RevenueCat ${version} ${res.status}` + (res.status === 429 ? ' (rate limited)' : ''))
   err.status = res.status
+  // RevenueCat sends Retry-After with a 429. Surfacing it lets a caller back
+  // off for the interval the API actually asked for instead of guessing.
+  if (res.status === 429) {
+    let after = null
+    try { after = res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null } catch (e) {}
+    const secs = Number(after)
+    if (Number.isFinite(secs) && secs >= 0) err.retryAfter = secs
+  }
   return err
 }
 
@@ -295,7 +308,13 @@ async function entitlements (user, opts) {
   const c = creds(opts)
   const broken = c.secret + '|' + c.project
   const downgraded = v2Broken[broken] && v2Broken[broken] > Date.now() - V2_BROKEN_TTL_MS
-  if (c.project && !downgraded) {
+  // Sandbox verification rides v1, always. X-Is-Sandbox is a v1 header, and
+  // v2 has no documented way to include sandbox purchases — its
+  // active_entitlements has been observed empty for a customer v1 reports as
+  // entitled from a sandbox purchase. Silently answering "not entitled" for
+  // every tester on the secret-key path would make the option a lie, so when
+  // you ask for sandbox you get the path where sandbox is defined.
+  if (c.project && !downgraded && !c.sandbox) {
     try {
       return await v2Entitlements(user, c)
     } catch (e) {

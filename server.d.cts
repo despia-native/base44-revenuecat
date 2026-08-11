@@ -36,6 +36,11 @@ export interface ServerOptions {
    * "true"/"1"/"yes"/"on" enable it, anything else (including the string
    * "false") does not. Leave off in production — enabling it there hides
    * real purchases and denies every paying customer.
+   *
+   * Sandbox checks always use RevenueCat's v1 API, even when a secret key and
+   * project id are configured: `X-Is-Sandbox` is a v1 header and v2 has no
+   * documented sandbox support, so routing a tester through v2 would deny
+   * every sandbox purchase. Production checks are unaffected.
    */
   sandbox?: boolean
 }
@@ -50,9 +55,10 @@ export interface ActiveEntitlement {
 /**
  * The one-line server gate: does this user have an active entitlement?
  *
- * @throws When no API key is configured, on RevenueCat non-2xx answers
- * (including 429 rate limits), and on network errors/timeouts. Catch and
- * deny (fail closed).
+ * @throws When no API key is configured, on RevenueCat non-2xx answers, and
+ * on network errors/timeouts. Catch and deny (fail closed). The thrown Error
+ * carries `status` (the HTTP status) and, on a 429, `retryAfter` in seconds
+ * when RevenueCat sends a Retry-After header.
  * @example
  * const { entitled } = require('base44-revenuecat/server')
  * let ok = false

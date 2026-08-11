@@ -58,6 +58,21 @@ gates fail closed.)
   `server.d.ts` remains as a named-exports-only fallback so legacy
   `moduleResolution: "node"` consumers keep resolving.
 
+### Fixed (RevenueCat REST API contract)
+
+- **`{ sandbox: true }` silently did nothing on the secret-key path.**
+  `X-Is-Sandbox` is a **v1** header; the v2 API has no documented sandbox
+  support, and its `active_entitlements` has been reported empty for a
+  customer v1 reports as entitled from a sandbox purchase. Anyone testing
+  with `RC_SECRET` + `RC_PROJECT` set would have had every sandbox purchase
+  denied with no way to fix it. A sandbox check now always uses the v1 path,
+  where sandbox is defined; production checks are unaffected. The header is
+  also no longer sent to v2 endpoints at all.
+- **`Retry-After` was discarded on rate limits.** RevenueCat sends it with a
+  429; the thrown error now carries `retryAfter` in seconds alongside
+  `status`, so a caller can back off for the interval the API asked for
+  instead of guessing.
+
 ### Changed (test and release gates)
 
 - **CI verified the working tree, not the package it publishes.** The
