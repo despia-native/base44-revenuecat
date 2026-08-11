@@ -748,6 +748,8 @@ async function testRedeemStub () {
   console.log('  redeem: unsupported resolves cleanly, never crashes ✓')
 }
 
+const FUTURE_MS = Date.now() + 365 * 86400000
+
 async function testServer () {
   const calls = []
   const SUBSCRIBER = {
@@ -780,8 +782,10 @@ async function testServer () {
     if (url.includes('/projects/projPaged/customers/') && url.includes('active_entitlements')) {
       if (url.includes('starting_after')) {
         // v2 reports expires_at as EPOCH MILLISECONDS (per the API
-        // reference), not an ISO string: the mapper must convert it.
-        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: 1658399423658 }] }) }
+        // reference), not an ISO string: the mapper must convert it. Use a
+        // FUTURE timestamp — a past one would encode the expectation that an
+        // expired entitlement is active.
+        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: FUTURE_MS }] }) }
       }
       return {
         ok: true,
@@ -859,7 +863,7 @@ async function testServer () {
   const paged = await server.entitlements('u1', { secret: 'sk_test', project: 'projPaged' })
   assert.deepStrictEqual(paged.map((e) => e.id).sort(), ['plus', 'premium'])
   const plusEnt = paged.find((e) => e.id === 'plus')
-  assert.strictEqual(plusEnt.expires, new Date(1658399423658).toISOString(), 'epoch-ms expires_at converts to ISO')
+  assert.strictEqual(plusEnt.expires, new Date(FUTURE_MS).toISOString(), 'epoch-ms expires_at converts to ISO')
 
   // An entitlement created after the lookup-key map was cached must not read
   // as a raw "entl..." id (which would deny a paying subscriber until the
@@ -942,6 +946,505 @@ async function testServer () {
   }
 
   console.log('  server: v1/v2 paths, honest fallback, pagination, env keys, fail-closed throws ✓')
+}
+
+async function testMultiOfferingPricing () {
+  // A project with more than one offering is RevenueCat's NORMAL state
+  // (experiments, promos, win-back, legacy prices). plans() must describe ONE
+  // offering — the current one — or a non-current offering's package claims
+  // the canonical short id like 'monthly' and buy(plans[0].id) charges its
+  // SKU at its price.
+  function P (id, price, offering) {
+    return {
+      id: id, sku: id, plan: null, type: 'subscription', title: id, desc: '',
+      price: price, priceString: '$' + price, currency: 'USD',
+      period: 'P1M', periodUnit: 'month', periodCount: 1, intro: null,
+      offering: offering, package: '$rc_monthly', packageType: 'monthly'
+    }
+  }
+  const BF = P('premium_monthly_bf', 2.99, 'blackfriday')
+  const DEF = P('premium_monthly', 9.99, 'default')
+  const full = {
+    ok: true, runtime: 4, current: 'default', user: null,
+    offerings: [
+      { id: 'blackfriday', current: false, packages: [{ id: '$rc_monthly', type: 'monthly', product: BF }] },
+      { id: 'default', current: true, packages: [{ id: '$rc_monthly', type: 'monthly', product: DEF }] }
+    ],
+    products: [BF, DEF], error: null, code: null
+  }
+  const bought = []
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        catalog: (a) => {
+          if (!a.offering) return Promise.resolve(full)
+          const kept = full.offerings.filter((o) => o.id === a.offering)
+          return Promise.resolve(Object.assign({}, full, { offerings: kept, products: kept.flatMap((o) => o.packages.map((p) => p.product)) }))
+        },
+        purchase: (a) => { bought.push(a.product); return Promise.resolve({ status: 'purchased', product_id: a.product }) }
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const plans = await iap.plans()
+  assert.strictEqual(plans.length, 1, 'plans() describes one offering, not every offering in the project')
+  assert.strictEqual(plans[0].product, 'premium_monthly', 'plans() uses the CURRENT offering')
+  assert.strictEqual(plans[0].price.value, 9.99, 'the current offering keeps its real price')
+  assert.strictEqual(plans[0].id, 'monthly', 'the current offering keeps the canonical short id')
+  await iap.buy(plans[0].id)
+  assert.strictEqual(bought[0], 'premium_monthly', 'buy(plans[0].id) charges the current offering, not a promo SKU')
+
+  // An explicit filter still wins over `current`.
+  bought.length = 0
+  const promo = await iap.plans('blackfriday')
+  assert.strictEqual(promo[0].product, 'premium_monthly_bf', 'an explicit offering filter is honored')
+  assert.strictEqual(promo[0].id, 'monthly', 'the filtered offering keeps the canonical id too')
+
+  // THE MONEY TEST: an unrelated catalog read between rendering a promo
+  // paywall and buying must not repoint the short id at a different SKU.
+  // The user is charged what they were shown, or the package is broken.
+  await iap.products()                      // a prefetch / another screen
+  await iap.buy('monthly')
+  assert.strictEqual(bought[0], 'premium_monthly_bf', 'the price shown is the price charged, even after an unrelated catalog read')
+
+  // Switching users still drops every cached scope.
+  await iap.user('someone-else')
+  assert.deepStrictEqual(iap._catalogs, {}, 'an identity change clears every cached offering scope')
+  console.log('  multi-offering: plans() scoped, and the price shown is the price charged ✓')
+}
+
+async function testTerminalErrorsSettleFast () {
+  // center() must not hold a caller for the sheet window on a terminal
+  // native error. not_ready is the likeliest one in practice: the SDK
+  // configures at launch, so an early "Manage subscription" tap hits it.
+  for (const code of ['not_ready', 'no_activity', 'offerings_failed']) {
+    const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+    win.dsx = { module: { revenuecat: { center: () => Promise.reject({ code }) } } }
+    global.window = win
+    global.self = win
+    const iap = freshRequire()
+    const t0 = Date.now()
+    const r = await iap.center()
+    assert.strictEqual(r.ok, false)
+    assert.strictEqual(r.code, code, `center() surfaces ${code} instead of hanging`)
+    assert.ok(Date.now() - t0 < iap._t.sheet, 'settles immediately, not on the sheet timeout')
+  }
+
+  // redeem() on a capable classic build must work as the FIRST call.
+  const fired = []
+  const win3 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win3, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win3.revenueCatProducts = envelope(3)
+          if (typeof win3.onRevenueCatProducts === 'function') win3.onRevenueCatProducts(win3.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://redeem')) {
+          win3.revenueCatResult = { ok: true, source: 'redeem', code: null }
+          if (typeof win3.onRevenueCatResult === 'function') win3.onRevenueCatResult(win3.revenueCatResult)
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win3
+  global.self = win3
+  const iap3 = freshRequire()
+  const red = await iap3.redeem()
+  assert.strictEqual(red.supported, true, 'redeem() probes the bridge instead of answering unsupported on a cold first call')
+  console.log('  terminal errors settle immediately; redeem() probes on a cold start ✓')
+}
+
+async function testServerIdentityAndMatching () {
+  // The whole point of the server module is that the client cannot be
+  // trusted, so the gate must read the entitlements of the user it was ASKED
+  // about — with a mock that answers differently per user, not one subscriber
+  // for everybody.
+  const seen = []
+  const PEOPLE = {
+    subscriber_1: { pro: { expires_date: null }, pro_trial: { expires_date: null } },
+    freeloader: {}
+  }
+  global.fetch = async (url, init) => {
+    seen.push(url)
+    const m = url.match(/\/v1\/subscribers\/([^/?]+)/)
+    const who = m ? decodeURIComponent(m[1]) : null
+    if (who) {
+      const ents = PEOPLE[who]
+      if (!ents) return { ok: false, status: 404, json: async () => ({}) }
+      return { ok: true, status: 200, json: async () => ({ subscriber: { entitlements: ents } }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+  const key = { key: 'appl_pub' }
+
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro', key), true, 'the real subscriber is entitled')
+  assert.strictEqual(await server.entitled('freeloader', 'pro', key), false, "another user's subscription never leaks across")
+  assert.ok(seen.some((u) => u.includes('/freeloader')), 'the request actually asked about the user passed in')
+
+  // Entitlement ids are matched EXACTLY. A gate for 'pro' must not be
+  // satisfied by holding 'pro_trial', and vice versa.
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro_trial', key), true)
+  assert.strictEqual(await server.entitled('subscriber_1', 'p', key), false, 'a prefix of an entitlement id never passes the gate')
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro_trial_extra', key), false, 'a longer id never passes either')
+
+  // A blank/undefined user id must deny, never inherit somebody else's answer.
+  for (const bad of ['', null, undefined]) {
+    assert.deepStrictEqual(await server.entitlements(bad, key), [], 'a falsy user id yields no entitlements')
+    assert.strictEqual(await server.entitled(bad, 'pro', key), false, 'a falsy user id is never entitled')
+  }
+
+  // The configured timeout must reach the request, not just "a signal exists".
+  let seenMs = null
+  const realTimeout = AbortSignal.timeout
+  AbortSignal.timeout = (ms) => { seenMs = ms; return realTimeout.call(AbortSignal, ms) }
+  try {
+    await server.entitled('subscriber_1', 'pro', { key: 'appl_pub', timeout: 4321 })
+    assert.strictEqual(seenMs, 4321, 'the configured timeout is the one actually applied')
+    await server.entitled('subscriber_1', 'pro', { key: 'appl_pub' })
+    assert.strictEqual(seenMs, 10000, 'the documented 10s default is the one actually applied')
+  } finally {
+    AbortSignal.timeout = realTimeout
+  }
+
+  // secret wins over key when both are supplied, as documented.
+  delete require.cache[require.resolve('./server.cjs')]
+  const s2 = require('./server.cjs')
+  seen.length = 0
+  const auths = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => { auths.push(init.headers.Authorization); return prev(url, init) }
+  await s2.entitled('subscriber_1', 'pro', { key: 'appl_pub', secret: 'sk_wins' })
+  assert.strictEqual(auths[0], 'Bearer sk_wins', 'secret wins over key when both are set')
+  global.fetch = prev
+
+  console.log('  server identity: right user, exact id match, real timeout, secret precedence ✓')
+}
+
+async function testLapsedAndPlanResolution () {
+  // The most common real-world state a gate must get right: an entitlement
+  // the customer USED to have. It stays in `all` forever and must never
+  // satisfy has().
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: ['basic'], all: ['basic', 'premium'] },
+          subscriptions: [],
+          details: { basic: { active: true }, premium: { active: false, expires: '2020-01-01T00:00:00Z' } }
+        }),
+        history: () => Promise.resolve([])
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  let iap = freshRequire()
+  assert.strictEqual(await iap.has('basic'), true, 'an active entitlement passes')
+  assert.strictEqual(await iap.has('premium'), false, 'a LAPSED entitlement (in all, not active) must never pass')
+  const info = await iap.info()
+  assert.strictEqual(info.entitlements.premium.active, false, 'info() reports the lapsed entitlement as inactive')
+  assert.strictEqual(info.entitlements.basic.active, true)
+
+  // buy() must resolve the plan the caller named, not simply the first one.
+  const bought = []
+  const win2 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win2.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => Promise.resolve(envelope(4)),
+        purchase: (a) => { bought.push(a.product); return Promise.resolve({ status: 'purchased', product_id: a.product, active_entitlements: ['premium'] }) }
+      }
+    }
+  }
+  global.window = win2
+  global.self = win2
+  iap = freshRequire()
+  const plans = await iap.plans()
+  const annual = plans.find((p) => p.id === 'annual')
+  const r = await iap.buy(annual.id)
+  assert.strictEqual(bought[0], 'premium:annual', 'buy() charges the plan that was named, not plans[0]')
+  assert.strictEqual(r.product, 'premium:annual', 'the result reports the product the store confirmed')
+  assert.deepStrictEqual(r.entitlements, ['premium'], 'the result carries the entitlements the store returned')
+
+  const monthly = plans.find((p) => p.id === 'monthly')
+  assert.strictEqual(monthly.price.value, 9.99, 'the numeric price survives the unified envelope')
+  assert.strictEqual(monthly.price.currency, 'USD', 'the currency survives the unified envelope')
+
+  // The RC-flavored mapper (older builds without `catalog`, falling back to
+  // `offerings`/`products`) must preserve the numeric price and currency too:
+  // a zeroed price renders as "free" and a null currency breaks formatting.
+  const win3 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win3.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => Promise.reject({ code: 'unknown_action' }),
+        offerings: () => Promise.reject({ code: 'unknown_action' }),
+        products: () => Promise.resolve([{
+          id: 'premium:monthly',
+          type: 'subscription',
+          title: 'Premium Monthly',
+          description: 'All of it',
+          price: { amount: 12.5, formatted: '$12.50', currency: 'CAD' },
+          subscription: { period: 'P1M', period_unit: 'month', period_count: 1 },
+          introductory_offer: { price: { amount: 2.5, formatted: '$2.50' }, period_unit: 'month', period_count: 1, cycles: 3, payment_mode: 'pay_as_you_go' }
+        }])
+      }
+    }
+  }
+  global.window = win3
+  global.self = win3
+  iap = freshRequire()
+  const mapped = await iap.products()
+  assert.strictEqual(mapped[0].price, 12.5, 'the RC-flavored mapper keeps the numeric price')
+  assert.strictEqual(mapped[0].currency, 'CAD', 'the RC-flavored mapper keeps the currency')
+  const mappedPlans = await iap.plans()
+  assert.strictEqual(mappedPlans[0].price.value, 12.5, 'the mapped numeric price reaches plans()')
+  assert.strictEqual(mappedPlans[0].intro.type, 'payg', 'a multi-cycle intro is pay-as-you-go, not pay-up-front')
+
+  // info() on a build with NO per-entitlement details falls back to inferring
+  // from store history — that path must report a lapsed entitlement as
+  // inactive just as the native-details path does.
+  const win4 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win4.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: ['basic'], all: ['basic', 'premium'] },
+          subscriptions: []
+        }),
+        history: () => Promise.resolve([
+          { productId: 'p_basic', entitlementId: 'basic', isActive: true, willRenew: true, purchaseDate: '2026-01-01T00:00:00Z', expirationDate: '2027-01-01T00:00:00Z' },
+          { productId: 'p_prem', entitlementId: 'premium', isActive: false, willRenew: false, purchaseDate: '2020-01-01T00:00:00Z', expirationDate: '2021-01-01T00:00:00Z' }
+        ])
+      }
+    }
+  }
+  global.window = win4
+  global.self = win4
+  iap = freshRequire()
+  const inferred = await iap.info()
+  assert.strictEqual(inferred.entitlements.basic.active, true, 'inference path: active entitlement is active')
+  assert.strictEqual(inferred.entitlements.premium.active, false, 'inference path: a LAPSED entitlement is not active')
+  assert.strictEqual(inferred.entitlements.premium.expires, '2021-01-01T00:00:00Z', 'inference path reports the real expiry')
+  assert.strictEqual(inferred.entitlements.basic.renews, true, 'inference path reports the real renewal state')
+  assert.strictEqual(inferred.entitlements.premium.renews, false)
+  console.log('  lapsed entitlements denied on both info() paths; mapped prices survive ✓')
+}
+
+async function testSharedResultChannelIsolation () {
+  // buy() and paywall() share ONE native result channel. Each must take only
+  // its own outcome, or dismissing a paywall resolves an in-flight purchase
+  // as a successful sale.
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win.revenueCatProducts = envelope(3)
+          if (typeof win.onRevenueCatProducts === 'function') win.onRevenueCatProducts(win.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://launchPaywall')) {
+          // The paywall is dismissed without buying.
+          const r = { ok: false, cancelled: true, source: 'paywall', product: null, transaction: null, entitlements: [], code: 'purchaseCancelledError' }
+          win.revenueCatResult = r
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(r)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          const r = { ok: true, cancelled: false, source: 'purchase', product: 'premium:monthly', transaction: 'T1', entitlements: ['premium'], code: null }
+          win.revenueCatResult = r
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(r)
+        }
+      }, 15)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  await iap.products()
+  const [pw, buy] = await Promise.all([iap.paywall(), iap.buy('monthly')])
+  assert.strictEqual(pw.source, 'paywall', 'the paywall takes the paywall outcome')
+  assert.strictEqual(pw.cancelled, true)
+  assert.strictEqual(buy.source, 'purchase', 'the purchase takes the purchase outcome')
+  assert.strictEqual(buy.ok, true, 'a dismissed paywall never resolves an in-flight buy() as a sale')
+  assert.strictEqual(buy.product, 'premium:monthly')
+
+  // The real hazard: a STRAY paywall outcome landing on the shared channel
+  // while a purchase is in flight (a late dismissal, a duplicate emit). The
+  // purchase must ignore it and wait for its own result, or the app records a
+  // sale the store never made — or reports a cancel on a completed purchase.
+  const win2 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win2, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win2.revenueCatProducts = envelope(3)
+          if (typeof win2.onRevenueCatProducts === 'function') win2.onRevenueCatProducts(win2.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          // A late paywall dismissal arrives FIRST, on the same channel.
+          const stray = { ok: false, cancelled: true, source: 'paywall', product: null, transaction: null, entitlements: [], code: 'purchaseCancelledError' }
+          win2.revenueCatResult = stray
+          if (typeof win2.onRevenueCatResult === 'function') win2.onRevenueCatResult(stray)
+          setTimeout(() => {
+            const real = { ok: true, cancelled: false, source: 'purchase', product: 'premium:monthly', transaction: 'T9', entitlements: ['premium'], code: null }
+            win2.revenueCatResult = real
+            if (typeof win2.onRevenueCatResult === 'function') win2.onRevenueCatResult(real)
+          }, 40)
+        }
+      }, 15)
+    },
+    configurable: true
+  })
+  global.window = win2
+  global.self = win2
+  const iap2 = freshRequire()
+  await iap2.products()
+  const solo = await iap2.buy('monthly')
+  assert.strictEqual(solo.source, 'purchase', 'a stray paywall outcome never settles an in-flight purchase')
+  assert.strictEqual(solo.ok, true)
+  assert.strictEqual(solo.transaction, 'T9', 'the purchase resolves with its OWN store transaction')
+  console.log('  shared result channel: buy() and paywall() never take each other\'s outcome ✓')
+}
+
+async function testAnonIdStability () {
+  // Anonymous purchases made before login must all belong to ONE RevenueCat
+  // customer on this device, or pre-signup revenue scatters.
+  const store = {}
+  const win = {
+    navigator: { userAgent: 'despia-iphone' },
+    localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v) } }
+  }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const first = iap._anon()
+  assert.ok(/^b44_/.test(first), 'a synthesized id is generated')
+  assert.strictEqual(iap._anon(), first, 'the same anonymous id comes back on every call')
+  const fresh2 = freshRequire()
+  assert.strictEqual(fresh2._anon(), first, 'and it survives a reload from localStorage')
+  console.log('  anonymous id is stable across calls and reloads ✓')
+}
+
+async function testEventDelivery () {
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const got = { purchase: [], center: [], result: [] }
+  iap.on('purchase', (d) => got.purchase.push(d))
+  iap.on('center', (e) => got.center.push(e))
+  iap.on('result', (r) => got.result.push(r))
+  win.onRevenueCatPurchase({ info: 1 })
+  win.onRevenueCatCenter({ event: 'restoreCompleted' })
+  win.onRevenueCatResult({ ok: true, source: 'purchase' })
+  assert.deepStrictEqual(got.purchase, [{ info: 1 }], "on('purchase') receives the native payload")
+  assert.deepStrictEqual(got.center, [{ event: 'restoreCompleted' }], "on('center') receives Customer Center events")
+  assert.strictEqual(got.result.length, 1, "on('result') receives outcomes")
+  iap.off('purchase')
+  win.onRevenueCatPurchase({ info: 2 })
+  assert.strictEqual(got.purchase.length, 1, 'off(event) with no fn removes every listener for it')
+  console.log("  events: purchase/center/result delivered, off(event) removes all ✓")
+}
+
+async function testServerHardening () {
+  const calls = []
+  const iso = (ms) => new Date(ms).toISOString()
+  let listReads = 0
+  global.fetch = async (url, init) => {
+    calls.push({ url, headers: init.headers })
+    if (url.includes('/v1/subscribers/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          subscriber: {
+            entitlements: {
+              // Card is failing, store is retrying: RevenueCat reports the
+              // grace window separately and the device still says entitled.
+              grace: { expires_date: iso(Date.now() - 86400000), grace_period_expires_date: iso(Date.now() + 86400000) },
+              lapsed: { expires_date: iso(Date.now() - 86400000), grace_period_expires_date: iso(Date.now() - 3600000) },
+              lifetime: { expires_date: null },
+              broken: null
+            }
+          }
+        })
+      }
+    }
+    if (url.includes('/projects/projHerd/entitlements?')) {
+      listReads++
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlH', lookup_key: 'premium' }] }) }
+    }
+    if (url.includes('/projects/projHerd/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlH', expires_at: FUTURE_MS }] }) }
+    }
+    if (url.includes('/projects/projEvil/entitlements?')) {
+      // A tampered/buggy page pointer must never redirect the API key.
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlE', lookup_key: 'premium' }], next_page: 'http://attacker.example/steal' }) }
+    }
+    if (url.includes('/projects/projEvil/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlE', expires_at: FUTURE_MS }] }) }
+    }
+    if (url.includes('/projects/projSec/entitlements?')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlS', lookup_key: 'premium' }] }) }
+    }
+    if (url.includes('/projects/projSec/customers/') && url.includes('active_entitlements')) {
+      // Epoch SECONDS instead of ms must not render as 1970.
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlS', expires_at: Math.floor(FUTURE_MS / 1000) }] }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+
+  // A billing grace period keeps a paying customer entitled: their device
+  // says yes, and the server must not disagree.
+  assert.strictEqual(await server.entitled('u1', 'grace', { key: 'appl_pub' }), true, 'grace period stays entitled')
+  assert.strictEqual(await server.entitled('u1', 'lapsed', { key: 'appl_pub' }), false, 'expired grace is not entitled')
+  assert.strictEqual(await server.entitled('u1', 'lifetime', { key: 'appl_pub' }), true, 'null expiry is lifetime')
+  assert.strictEqual(await server.entitled('u1', 'broken', { key: 'appl_pub' }), false, 'a null entitlement object never grants access')
+
+  // 'false' is a string, and truthiness would have turned sandbox ON in
+  // production, hiding every real purchase.
+  calls.length = 0
+  await server.entitled('u1', 'grace', { key: 'appl_pub', sandbox: 'false' })
+  assert.ok(!calls[0].headers['X-Is-Sandbox'], "sandbox:'false' is OFF, not truthy-ON")
+  calls.length = 0
+  await server.entitled('u1', 'grace', { key: 'appl_pub', sandbox: 'yes' })
+  assert.strictEqual(calls[0].headers['X-Is-Sandbox'], 'true', "sandbox:'yes' is ON")
+
+  // A numeric string from config must not crash AbortSignal.timeout.
+  assert.strictEqual(await server.entitled('u1', 'grace', { key: 'appl_pub', timeout: '5000' }), true, 'numeric-string timeout works')
+
+  // A page pointer to another host must NOT receive the API key.
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projEvil' })
+  assert.ok(!calls.some((c) => c.url.includes('attacker')), 'never follows next_page off the RevenueCat origin')
+
+  // Concurrent cold-cache checks make ONE list request, not N.
+  calls.length = 0
+  listReads = 0
+  const herd = await Promise.all(Array.from({ length: 20 }, () => server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projHerd' })))
+  assert.ok(herd.every(Boolean), 'all concurrent checks resolve entitled')
+  assert.strictEqual(listReads, 1, 'in-flight dedup: 20 concurrent checks share one lookup fetch')
+
+  // Epoch seconds must not become 1970.
+  const secs = await server.entitlements('u1', { secret: 'sk_x', project: 'projSec' })
+  assert.ok(new Date(secs[0].expires).getUTCFullYear() > 2020, 'epoch-seconds expires_at is not read as 1970')
+
+  console.log('  server hardening: grace period, sandbox strings, SSRF, herd, epoch units ✓')
 }
 
 async function testV4 () {
@@ -1508,7 +2011,15 @@ async function testBuyRejectsUnusableInput () {
   await testOnUnsubscribeReleasesBookkeeping()
   await testCenterHonesty()
   await testBuyRejectsUnusableInput()
+  await testMultiOfferingPricing()
+  await testTerminalErrorsSettleFast()
+  await testLapsedAndPlanResolution()
+  await testSharedResultChannelIsolation()
+  await testAnonIdStability()
+  await testEventDelivery()
   await testServer()
+  await testServerIdentityAndMatching()
+  await testServerHardening()
   console.log('all tests passed')
   process.exit(0)
 })().catch((e) => {

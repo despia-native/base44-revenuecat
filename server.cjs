@@ -49,8 +49,9 @@
 
 'use strict'
 
-const V1 = 'https://api.revenuecat.com/v1'
-const V2 = 'https://api.revenuecat.com/v2'
+const API_ORIGIN = 'https://api.revenuecat.com'
+const V1 = API_ORIGIN + '/v1'
+const V2 = API_ORIGIN + '/v2'
 
 const DEFAULT_TIMEOUT_MS = 10000
 
@@ -67,6 +68,17 @@ function env (name) {
   return undefined
 }
 
+// Booleans that may arrive as strings (env vars, JSON config, form values).
+// The string 'false' is FALSE here: `!!'false'` would be true, and for the
+// sandbox flag that silently hides every real purchase in production.
+function flag (v) {
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase()
+    return s === 'true' || s === '1' || s === 'yes' || s === 'on'
+  }
+  return !!v
+}
+
 function creds (opts) {
   opts = opts || {}
   const auth = opts.secret || opts.key ||
@@ -76,11 +88,11 @@ function creds (opts) {
   if (!auth) {
     throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
   }
-  const timeout = opts.timeout > 0 ? opts.timeout : DEFAULT_TIMEOUT_MS
-  const envSandbox = env('RC_SANDBOX') || env('REVENUECAT_SANDBOX')
-  const sandbox = opts.sandbox != null
-    ? !!opts.sandbox
-    : envSandbox === 'true' || envSandbox === '1'
+  // Number() so a numeric string from config/env ('5000') works instead of
+  // throwing inside AbortSignal.timeout.
+  const wanted = Number(opts.timeout)
+  const timeout = Number.isFinite(wanted) && wanted > 0 ? wanted : DEFAULT_TIMEOUT_MS
+  const sandbox = flag(opts.sandbox != null ? opts.sandbox : (env('RC_SANDBOX') || env('REVENUECAT_SANDBOX')))
   // Only secret keys may use the v2 API; public keys always ride v1.
   return { secret: auth, project: auth.indexOf('sk_') === 0 ? project : null, timeout, sandbox }
 }
@@ -109,12 +121,41 @@ function httpError (version, res) {
 
 // v2 endpoints that answered 401/403/404 for a key+project are remembered so
 // a misconfigured v2 setup doesn't double every request's latency forever.
+// Remembered with a TTL, not forever: a single transient 403 (a RevenueCat
+// blip, a key permission edited and reverted) must not pin a long-lived
+// process to v1 for its whole life. It re-probes once the window passes.
+const V2_BROKEN_TTL_MS = 600000
 const v2Broken = {}
 
 // v2 entitlement lookup-key join, cached ~5 minutes per project. The v2
 // customer endpoint returns internal entitlement ids ("entl..."), so we map
 // them back to the human lookup keys your app gates on.
+const LOOKUP_TTL_MS = 300000
 const lookupCache = {}
+// In-flight fetches, so N concurrent gate checks on a cold cache make ONE
+// request instead of N (a cold isolate would otherwise stampede and 429).
+const lookupInflight = {}
+// When a refresh still doesn't explain an entitlement id, don't re-refresh on
+// every subsequent call: that turns one unknown id into permanent request
+// amplification. Back off and answer from what we have.
+const LOOKUP_MISS_BACKOFF_MS = 60000
+const lookupMiss = {}
+
+// Resolve a `next_page` value against the API host. Every request carries the
+// API key, so a page pointer must never be able to send it somewhere else: a
+// tampered or buggy response saying `http://elsewhere/` would otherwise
+// exfiltrate a server-side sk_ secret in plaintext. Anything that does not
+// resolve back to the RevenueCat API origin ends pagination instead.
+function nextUrl (next) {
+  if (!next) return null
+  let url
+  try {
+    url = new URL(next, API_ORIGIN)
+  } catch (e) {
+    return null
+  }
+  return url.origin === API_ORIGIN ? url.href : null
+}
 
 async function v2Page (start, c, onItems) {
   let url = start
@@ -123,22 +164,28 @@ async function v2Page (start, c, onItems) {
     if (!res.ok) throw httpError('v2', res)
     const data = await res.json()
     onItems(data.items || [])
-    const next = data.next_page || null
-    url = !next ? null
-      : next.startsWith('http') ? next
-        : 'https://api.revenuecat.com' + (next.startsWith('/') ? next : '/' + next)
+    url = nextUrl(data.next_page)
   }
 }
 
 async function v2LookupKeys (project, c, fresh) {
   const cached = lookupCache[project]
-  if (!fresh && cached && cached.at > Date.now() - 300000) return cached.map
-  const map = {}
-  await v2Page(`${V2}/projects/${encodeURIComponent(project)}/entitlements?limit=100`, c, (items) => {
-    for (const item of items) map[item.id] = item.lookup_key || item.id
-  })
-  lookupCache[project] = { at: Date.now(), map }
-  return map
+  if (!fresh && cached && cached.at > Date.now() - LOOKUP_TTL_MS) return cached.map
+  if (lookupInflight[project]) return lookupInflight[project]
+  const run = (async () => {
+    const map = {}
+    await v2Page(`${V2}/projects/${encodeURIComponent(project)}/entitlements?limit=100`, c, (items) => {
+      for (const item of items) map[item.id] = item.lookup_key || item.id
+    })
+    lookupCache[project] = { at: Date.now(), map }
+    return map
+  })()
+  lookupInflight[project] = run
+  try {
+    return await run
+  } finally {
+    delete lookupInflight[project]
+  }
 }
 
 async function v2Entitlements (user, c) {
@@ -157,10 +204,10 @@ async function v2Entitlements (user, c) {
   if (!first.ok) throw httpError('v2', first)
   const data = await first.json()
   const items = (data.items || []).slice()
-  const next = data.next_page || null
-  if (next) {
-    await v2Page(next.startsWith('http') ? next : 'https://api.revenuecat.com' + (next.startsWith('/') ? next : '/' + next), c, (more) => {
-      items.push(...more)
+  const more = nextUrl(data.next_page)
+  if (more) {
+    await v2Page(more, c, (rows) => {
+      items.push(...rows)
     })
   }
   if (!items.length) return []
@@ -168,17 +215,35 @@ async function v2Entitlements (user, c) {
   // An entitlement created after this project's map was cached would not be
   // in it, and returning the raw "entl..." id would read as a DIFFERENT
   // entitlement than the one the app gates on: a paying subscriber denied
-  // until the cache expired. A miss refreshes the map once instead.
+  // until the cache expired. A miss refreshes the map once instead — but only
+  // once per backoff window, or an id the list genuinely never explains (a
+  // deleted entitlement) would re-fetch the whole list on every single call.
   if (items.some((e) => !keys[e.entitlement_id])) {
-    keys = await v2LookupKeys(c.project, c, true)
+    const missedAt = lookupMiss[c.project] || 0
+    if (missedAt < Date.now() - LOOKUP_MISS_BACKOFF_MS) {
+      keys = await v2LookupKeys(c.project, c, true)
+      if (items.some((e) => !keys[e.entitlement_id])) lookupMiss[c.project] = Date.now()
+    }
   }
   return items.map((e) => ({
     id: keys[e.entitlement_id] || e.entitlement_id,
-    // v2 reports expires_at as epoch milliseconds (per the API reference);
-    // new Date() accepts that number directly, and an ISO string equally,
-    // should the format ever change. null = lifetime.
-    expires: e.expires_at ? new Date(e.expires_at).toISOString() : null
+    expires: v2Expiry(e.expires_at)
   }))
+}
+
+// v2 reports expires_at as epoch MILLISECONDS. Accept an ISO string too, and
+// treat a suspiciously small number as seconds rather than rendering 1970:
+// anything below this threshold as ms would be 1970, and as seconds is a
+// plausible date, so seconds is the only sane reading.
+const MS_THRESHOLD = 100000000000        // ~1973 in ms, ~5138 in seconds
+function v2Expiry (raw) {
+  if (raw == null || raw === '') return null
+  if (typeof raw === 'number') {
+    const ms = raw < MS_THRESHOLD ? raw * 1000 : raw
+    return new Date(ms).toISOString()
+  }
+  const parsed = Date.parse(raw)
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString()
 }
 
 async function v1Entitlements (user, c) {
@@ -188,10 +253,28 @@ async function v1Entitlements (user, c) {
   const data = await res.json()
   const ents = (data.subscriber && data.subscriber.entitlements) || {}
   const out = []
+  const now = Date.now()
   for (const key of Object.keys(ents)) {
-    const expires = ents[key].expires_date || null
-    if (expires === null || Date.parse(expires) > Date.now()) {
-      out.push({ id: key, expires: expires ? new Date(expires).toISOString() : null })
+    const ent = ents[key]
+    // A row that isn't an object is malformed, not a lifetime grant: deny.
+    if (!ent || typeof ent !== 'object') continue
+    const expires = ent.expires_date || null
+    // A billing grace period keeps access alive while the store retries a
+    // failed payment, and RevenueCat reports that window separately. Take the
+    // later of the two: the customer's own SDK still says entitled, so
+    // denying them here would cut off someone who is still paying.
+    const grace = ent.grace_period_expires_date || null
+    const until = Math.max(
+      expires ? Date.parse(expires) || 0 : 0,
+      grace ? Date.parse(grace) || 0 : 0
+    )
+    // A lifetime/promotional grant is RevenueCat explicitly reporting
+    // expires_date: null. An entitlement carrying NEITHER field is a shape we
+    // don't recognise — deny rather than assume forever access.
+    if (expires === null && grace === null) {
+      if (Object.prototype.hasOwnProperty.call(ent, 'expires_date')) out.push({ id: key, expires: null })
+    } else if (until > now) {
+      out.push({ id: key, expires: new Date(until).toISOString() })
     }
   }
   return out
@@ -199,13 +282,20 @@ async function v1Entitlements (user, c) {
 
 // All ACTIVE entitlements for a user, as [{ id: 'premium', expires: ISO|null }].
 // `user` must be the same id the app passed to iap.login() / the paywall.
-// Expiry is enforced here too (Date.parse against now), so a stale cache
-// upstream can never extend access.
+//
+// How "active" is decided differs by path, deliberately:
+//   • v1 filters here, against the current clock, counting a billing grace
+//     period as still-active (the customer is still paying).
+//   • v2 asks RevenueCat's `active_entitlements` endpoint, which decides
+//     activity server-side. We do NOT re-filter its answer: RevenueCat owns
+//     the grace-period and billing-retry rules, and second-guessing its
+//     expiry timestamps here would deny customers it considers entitled.
 async function entitlements (user, opts) {
   if (!user) return []
   const c = creds(opts)
   const broken = c.secret + '|' + c.project
-  if (c.project && !v2Broken[broken]) {
+  const downgraded = v2Broken[broken] && v2Broken[broken] > Date.now() - V2_BROKEN_TTL_MS
+  if (c.project && !downgraded) {
     try {
       return await v2Entitlements(user, c)
     } catch (e) {
@@ -214,7 +304,7 @@ async function entitlements (user, opts) {
       // Anything else (429 rate limit, 5xx, network failure, timeout) would
       // fail on v1 too — surface it instead of spending a second request.
       if (e && (e.status === 401 || e.status === 403 || e.status === 404)) {
-        v2Broken[broken] = true
+        v2Broken[broken] = Date.now()
       } else {
         throw e
       }

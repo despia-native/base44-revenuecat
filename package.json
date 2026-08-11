@@ -76,6 +76,7 @@
     "index.d.ts",
     "server.cjs",
     "server.mjs",
+    "server.js",
     "server.d.ts",
     "server.d.cts",
     "server.d.mts",
