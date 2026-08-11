@@ -491,7 +491,10 @@
   // implementing it)?
   function reportsEntitlements (envelope) {
     if (!envelope) return false
-    if (envelope.details) return true
+    // Current builds set `details` unconditionally, and an empty object is
+    // truthy — so check for actual content, or a zero-entitlement envelope
+    // would outrank the device's store history exactly as before the fix.
+    if (envelope.details && Object.keys(envelope.details).length) return true
     var ents = envelope.entitlements
     return !!(ents && ((ents.active || []).length || (ents.all || []).length))
   }
@@ -595,8 +598,29 @@
     }
   }
 
+  // plans() describes ONE offering: the filtered one when a filter was
+  // applied, otherwise the current one. Flattening every offering in the
+  // project lets a non-current offering (an experiment, a win-back, a legacy
+  // price) claim the canonical short id like 'monthly' and hand it to buy(),
+  // charging the wrong SKU at the wrong price. Falls back to the flat product
+  // list when the envelope carries no offering structure (legacy channels).
+  function planSource (envelope) {
+    var offerings = envelope && envelope.offerings || []
+    var scope = null
+    if (offerings.length === 1) {
+      scope = offerings[0]
+    } else if (offerings.length > 1) {
+      for (var i = 0; i < offerings.length; i++) {
+        var o = offerings[i] || {}
+        if (o.current === true || (envelope.current && o.id === envelope.current)) { scope = o; break }
+      }
+    }
+    var rows = scope && scope.packages ? scope.packages.map(function (p) { return p && p.product }).filter(Boolean) : []
+    return rows.length ? rows : (envelope && envelope.products || [])
+  }
+
   function buildPlans (envelope) {
-    var products = envelope && envelope.products || []
+    var products = planSource(envelope)
     var plans = []
     for (var i = 0; i < products.length; i++) plans.push(toPlan(products[i]))
     var counts = {}
@@ -691,7 +715,8 @@
         self._user = id
         // Adoption is an identity change like any other: a catalog cached for
         // the anonymous user must not price the adopted account.
-        self._catalog = null
+        self._catalogs = {}
+        self._scope = ''
       }
       var user = self._user || (anon === false ? id : null)
       return { id: id || user, user: user, anonymous: !user, registered: !!user }
@@ -737,7 +762,7 @@
       var next = id == null || id === '' ? null : String(id)
       // Targeted offerings / placements can price users differently: a cached
       // catalog must never survive an identity change.
-      if (next !== self._user) self._catalog = null
+      if (next !== self._user) { self._catalogs = {}; self._scope = '' }
       self._user = next
       self._v3bound = false
       if (self._user && runtime() === 4) {
@@ -766,7 +791,8 @@
     //   const premium = user && await revenuecat.has('premium')
     logout: function () {
       this._user = null
-      this._catalog = null
+      this._catalogs = {}
+      this._scope = ''
       this._v3bound = false
       if (runtime() === 4) {
         // Fire-and-forget: newer builds rotate the native RevenueCat user to
@@ -800,11 +826,15 @@
       })
     },
 
-    // Remember the last good catalog so buy('monthly') can resolve plan ids
-    // without another native roundtrip.
-    _cache: function (envelope) {
+    // Remember the last good catalog PER OFFERING SCOPE so buy('monthly') can
+    // resolve plan ids without another native roundtrip. Scoped, not a single
+    // slot: a short id like 'monthly' means a different product in different
+    // offerings, so an unrelated catalog read (a prefetch, another screen)
+    // must not silently repoint the id the user is about to buy at a
+    // different SKU and a different price.
+    _cache: function (envelope, scope) {
       if (envelope && (envelope.ok !== false || (envelope.products && envelope.products.length))) {
-        this._catalog = { envelope: envelope, plans: buildPlans(envelope) }
+        this._catalogs[scope || ''] = { envelope: envelope, plans: buildPlans(envelope) }
       }
       return envelope
     },
@@ -855,7 +885,7 @@
                 envelope.code = 'offeringNotFoundError'
               }
             }
-            return self._cache(envelope)
+            return self._cache(envelope, offering)
           })
       }
       return chained('products', function () {
@@ -874,7 +904,7 @@
         // paywall can still be rendered on those binaries.
         warn('products query timed out, trying the legacy offerings read (rebuild in Despia for the full catalog API)')
         return self._v3Offerings(offering)
-      }).then(function (envelope) { return self._cache(envelope) })
+      }).then(function (envelope) { return self._cache(envelope, offering) })
     },
 
     // The legacy classic-runtime catalog read. Answers on window.offeringsData
@@ -911,13 +941,25 @@
     // plan.id (or the whole plan / its product id) feeds straight into buy().
     plans: function (offering) {
       var self = this
+      var scope = offering || ''
       return this.offers(offering).then(function (envelope) {
-        if (self._catalog && self._catalog.envelope === envelope) return self._catalog.plans
+        // plans() is the paywall-rendering call, so it decides which scope a
+        // later bare buy('monthly') refers to. Catalog READS (products/offers)
+        // deliberately do not move it: the user buys what they were shown.
+        self._scope = scope
+        var hit = self._catalogs[scope]
+        if (hit && hit.envelope === envelope) return hit.plans
         return buildPlans(envelope)
       })
     },
 
-    _catalog: null,
+    // scope -> { envelope, plans }
+    _catalogs: {},
+    // The offering scope plans() last rendered.
+    _scope: '',
+
+    // The snapshot a bare buy() resolves against.
+    get _catalog () { return this._catalogs[this._scope] || null },
 
     // Resolve a buy() argument, plan id ('monthly'), kind, '$rc_' package id,
     // or store product id, to the underlying store product id.
@@ -925,6 +967,15 @@
       var self = this
       var s = String(x && x.product || x)     // accept a whole plan object too
       var hit = findPlan(self._catalog && self._catalog.plans, s)
+      if (!hit) {
+        // Not in the rendered scope: fall back to any other cached snapshot
+        // rather than sending an unresolved short id to the store.
+        for (var k in self._catalogs) {
+          if (k === self._scope) continue
+          hit = findPlan(self._catalogs[k] && self._catalogs[k].plans, s)
+          if (hit) break
+        }
+      }
       if (hit) return Promise.resolve(hit.product)
       // Reverse-DNS or base-plan-qualified ids are store product ids already:
       // don't spend a catalog roundtrip on them.
@@ -1117,17 +1168,22 @@
         }, T.sheet)
         if (rt === 4) {
           v4call('center', { external_id: self._user }, T.probe).catch(function (err) {
-            // A build that definitively cannot present must say so now, not
-            // report success after sitting on the timeout for the full
-            // window. An AMBIGUOUS failure (e.g. the presentation ack timing
-            // out on a build that only answers at dismissal) keeps waiting
-            // for the dismissed event; the outer cap still bounds it.
+            // Only an ack TIMEOUT is ambiguous: the sheet may well be on
+            // screen on a build that answers at dismissal, so keep waiting
+            // for the dismissed event (the outer cap still bounds it). Every
+            // other rejection is terminal (not_ready, no_activity,
+            // offerings_failed, no_module, ...) and must settle NOW rather
+            // than holding the caller for the full sheet window.
             var code = err && err.code
-            if (code === 'no_module') {
-              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: 'unsupported' })
-            } else if (code === 'call_failed' || code === 'unknown_action' || code === 'missing_param') {
-              settle({ ok: false, source: 'center', platform: os(), runtime: 4, error: err && (err.message || err.error) || null, code: code })
-            }
+            if (code === 'timeout') return
+            settle({
+              ok: false,
+              source: 'center',
+              platform: os(),
+              runtime: 4,
+              error: err && (err.message || err.error) || null,
+              code: code === 'no_module' ? 'unsupported' : (code || 'error')
+            })
           })
         } else {
           fire(self._user ? 'revenuecat://center?external_id=' + encodeURIComponent(self._user) : 'revenuecat://center')
@@ -1144,7 +1200,9 @@
       if (rt === 4) {
         return Promise.all([
           v4call('customer', { external_id: self._user }, T.read).catch(function () { return null }),
-          v4call('history', {}, T.read).catch(function () { return null }),
+          // Same budget restore() gives this read: a slow store history that
+          // restore() tolerates must not make the gate answer "not entitled".
+          v4call('history', {}, T.history).catch(function () { return null }),
           // The dedicated entitlements read, for builds that predate the
           // unified `customer` envelope: real RevenueCat entitlement state
           // beats inferring it from the device's store history.
@@ -1301,8 +1359,21 @@
       }
       // Same deferred gate as the identity schemes: an unproven build routes
       // revenuecat://redeem into its license-gated catch-all, which can raise
-      // a native alert. Only fire once an envelope has proven the bridge.
-      if (!self._v3) return Promise.resolve(unsupported)
+      // a native alert. Only fire once an envelope has proven the bridge —
+      // proving it with the catalog read when nothing else has run yet, since
+      // a "Have a code?" button is often the first RevenueCat call an app
+      // makes and answering unsupported outright would break it on a capable
+      // build. (Same probe center() uses; offers() never rejects.)
+      if (!self._v3) {
+        return self.offers().catch(function () { return null }).then(function () {
+          return self._v3 ? self._redeem(unsupported) : unsupported
+        })
+      }
+      return this._redeem(unsupported)
+    },
+
+    _redeem: function (unsupported) {
+      var self = this
       return chained('result', function () {
         // Newer builds ack presentation on the result channel; silence means
         // the build predates the redeem bridge.

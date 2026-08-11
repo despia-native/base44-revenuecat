@@ -58,6 +58,43 @@ gates fail closed.)
   `server.d.ts` remains as a named-exports-only fallback so legacy
   `moduleResolution: "node"` consumers keep resolving.
 
+### Fixed (money-critical)
+
+- **`plans()` mixed every offering in the project, so a promo price could be
+  shown and a full price charged.** It flattened all offerings instead of
+  describing one, letting a non-current offering's package claim the canonical
+  short id (`monthly`) that the README tells you to pass to `buy()`. In a
+  project with a second offering — an experiment, a win-back, a legacy price,
+  which is RevenueCat's normal state — `buy(plans[0].id)` charged that
+  offering's SKU, and the current offering's plan lost its short id. `plans()`
+  now describes exactly one offering: the filtered one when you pass an id,
+  otherwise the current one.
+- **An unrelated catalog read could repoint a short id at a different SKU
+  between render and purchase.** The plan cache was a single unscoped slot, so
+  a prefetch or another screen calling `products()` after you rendered
+  `plans('winback')` made `buy('monthly')` resolve against the full catalog —
+  the user saw one price and was charged another. The cache is now keyed by
+  offering scope, and a bare `buy()` resolves against the scope `plans()` last
+  rendered. Catalog reads deliberately do not move that scope: you are charged
+  what you were shown.
+- **`status()` could report "not entitled" for a subscriber `restore()` could
+  see.** The two calls gave the same native store-history read different
+  budgets (8 s vs 15 s), so on a slow cold start the documented gate denied a
+  paying customer while the restore button worked. Both now use the same
+  budget.
+- **`center()` could hang for 30 minutes on a terminal error.** Only four error
+  codes settled it; every other code the native module can return — including
+  `not_ready`, which is likely when a "Manage subscription" tap happens early
+  in launch — fell through to the sheet timeout. Now only an ambiguous
+  presentation-ack timeout keeps waiting; everything else settles immediately.
+- **`redeem()` answered `unsupported` on a cold first call** on builds that do
+  support it, because it required bridge proof without probing for it. It now
+  probes the same way `center()` does — relevant since "Have a code?" is often
+  the first RevenueCat call an app makes.
+- **A zero-entitlement customer envelope still outranked store history.**
+  Current builds always set `details`, and `{}` is truthy, so the guard added
+  in 1.6.0 never fired on them. It now checks for actual content.
+
 ### Fixed (documentation)
 
 - **`buy(id, { offer })` was documented as working. It is not implemented

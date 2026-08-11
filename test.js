@@ -948,6 +948,118 @@ async function testServer () {
   console.log('  server: v1/v2 paths, honest fallback, pagination, env keys, fail-closed throws ✓')
 }
 
+async function testMultiOfferingPricing () {
+  // A project with more than one offering is RevenueCat's NORMAL state
+  // (experiments, promos, win-back, legacy prices). plans() must describe ONE
+  // offering — the current one — or a non-current offering's package claims
+  // the canonical short id like 'monthly' and buy(plans[0].id) charges its
+  // SKU at its price.
+  function P (id, price, offering) {
+    return {
+      id: id, sku: id, plan: null, type: 'subscription', title: id, desc: '',
+      price: price, priceString: '$' + price, currency: 'USD',
+      period: 'P1M', periodUnit: 'month', periodCount: 1, intro: null,
+      offering: offering, package: '$rc_monthly', packageType: 'monthly'
+    }
+  }
+  const BF = P('premium_monthly_bf', 2.99, 'blackfriday')
+  const DEF = P('premium_monthly', 9.99, 'default')
+  const full = {
+    ok: true, runtime: 4, current: 'default', user: null,
+    offerings: [
+      { id: 'blackfriday', current: false, packages: [{ id: '$rc_monthly', type: 'monthly', product: BF }] },
+      { id: 'default', current: true, packages: [{ id: '$rc_monthly', type: 'monthly', product: DEF }] }
+    ],
+    products: [BF, DEF], error: null, code: null
+  }
+  const bought = []
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        catalog: (a) => {
+          if (!a.offering) return Promise.resolve(full)
+          const kept = full.offerings.filter((o) => o.id === a.offering)
+          return Promise.resolve(Object.assign({}, full, { offerings: kept, products: kept.flatMap((o) => o.packages.map((p) => p.product)) }))
+        },
+        purchase: (a) => { bought.push(a.product); return Promise.resolve({ status: 'purchased', product_id: a.product }) }
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+
+  const plans = await iap.plans()
+  assert.strictEqual(plans.length, 1, 'plans() describes one offering, not every offering in the project')
+  assert.strictEqual(plans[0].product, 'premium_monthly', 'plans() uses the CURRENT offering')
+  assert.strictEqual(plans[0].price.value, 9.99, 'the current offering keeps its real price')
+  assert.strictEqual(plans[0].id, 'monthly', 'the current offering keeps the canonical short id')
+  await iap.buy(plans[0].id)
+  assert.strictEqual(bought[0], 'premium_monthly', 'buy(plans[0].id) charges the current offering, not a promo SKU')
+
+  // An explicit filter still wins over `current`.
+  bought.length = 0
+  const promo = await iap.plans('blackfriday')
+  assert.strictEqual(promo[0].product, 'premium_monthly_bf', 'an explicit offering filter is honored')
+  assert.strictEqual(promo[0].id, 'monthly', 'the filtered offering keeps the canonical id too')
+
+  // THE MONEY TEST: an unrelated catalog read between rendering a promo
+  // paywall and buying must not repoint the short id at a different SKU.
+  // The user is charged what they were shown, or the package is broken.
+  await iap.products()                      // a prefetch / another screen
+  await iap.buy('monthly')
+  assert.strictEqual(bought[0], 'premium_monthly_bf', 'the price shown is the price charged, even after an unrelated catalog read')
+
+  // Switching users still drops every cached scope.
+  await iap.user('someone-else')
+  assert.deepStrictEqual(iap._catalogs, {}, 'an identity change clears every cached offering scope')
+  console.log('  multi-offering: plans() scoped, and the price shown is the price charged ✓')
+}
+
+async function testTerminalErrorsSettleFast () {
+  // center() must not hold a caller for the sheet window on a terminal
+  // native error. not_ready is the likeliest one in practice: the SDK
+  // configures at launch, so an early "Manage subscription" tap hits it.
+  for (const code of ['not_ready', 'no_activity', 'offerings_failed']) {
+    const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+    win.dsx = { module: { revenuecat: { center: () => Promise.reject({ code }) } } }
+    global.window = win
+    global.self = win
+    const iap = freshRequire()
+    const t0 = Date.now()
+    const r = await iap.center()
+    assert.strictEqual(r.ok, false)
+    assert.strictEqual(r.code, code, `center() surfaces ${code} instead of hanging`)
+    assert.ok(Date.now() - t0 < iap._t.sheet, 'settles immediately, not on the sheet timeout')
+  }
+
+  // redeem() on a capable classic build must work as the FIRST call.
+  const fired = []
+  const win3 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win3, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win3.revenueCatProducts = envelope(3)
+          if (typeof win3.onRevenueCatProducts === 'function') win3.onRevenueCatProducts(win3.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://redeem')) {
+          win3.revenueCatResult = { ok: true, source: 'redeem', code: null }
+          if (typeof win3.onRevenueCatResult === 'function') win3.onRevenueCatResult(win3.revenueCatResult)
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win3
+  global.self = win3
+  const iap3 = freshRequire()
+  const red = await iap3.redeem()
+  assert.strictEqual(red.supported, true, 'redeem() probes the bridge instead of answering unsupported on a cold first call')
+  console.log('  terminal errors settle immediately; redeem() probes on a cold start ✓')
+}
+
 async function testServerHardening () {
   const calls = []
   const iso = (ms) => new Date(ms).toISOString()
@@ -1600,6 +1712,8 @@ async function testBuyRejectsUnusableInput () {
   await testOnUnsubscribeReleasesBookkeeping()
   await testCenterHonesty()
   await testBuyRejectsUnusableInput()
+  await testMultiOfferingPricing()
+  await testTerminalErrorsSettleFast()
   await testServer()
   await testServerHardening()
   console.log('all tests passed')
