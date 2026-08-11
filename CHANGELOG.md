@@ -18,23 +18,23 @@ gates fail closed.)
   was written `workflow_dispatch::`, which parses as an event named
   `workflow_dispatch:`. GitHub rejects a workflow containing an unknown event
   outright rather than ignoring the bad key, so *no* run was produced for any
-  trigger — push and pull_request included. This is why the 1.6.1 pull request
+  trigger - push and pull_request included. This is why the 1.6.1 pull request
   reported no checks; it was never an Actions incident.
 - **A misspelled offering no longer shows default pricing.** `paywall('winbak')`
   resolved by presenting the **default** offering, because the native layer
-  falls back silently — so a full-price paywall appeared where a discount was
+  falls back silently - so a full-price paywall appeared where a discount was
   intended, and nothing reported that it had happened. The offering is now
   checked against the catalog before presenting, answering
   `offeringNotFoundError` exactly as `plans()` and `offers()` already did. The
   check is served from an already-rendered catalog when there is one, so the
   common path costs no extra request, and a catalog read that throws still
-  presents — an unverifiable offering must not cost every sale.
+  presents - an unverifiable offering must not cost every sale.
 
 ### Changed
 
 - **One resolver decides entitlement truth, with the invariant written once.**
   "A paying subscriber reads as not entitled" had appeared five times across
-  1.4.2–1.6.1, each at a different rung of the resolution ladder, because the
+  1.4.2-1.6.1, each at a different rung of the resolution ladder, because the
   precedence rule lived as prose at four sites instead of as code at one. Every
   source now classifies as POSITIVE / NEGATIVE / EMPTY / ERROR and every read
   goes through one `resolveEntitlement()`: an EMPTY answer never terminates
@@ -47,7 +47,7 @@ gates fail closed.)
 
 - **`{ cacheMs }` on the server helpers**, opt-in and off by default. Without
   it every gated request is one RevenueCat request, which scales linearly into
-  429s — and a 429 throws, which fail-closed handling turns into a 503 for a
+  429s - and a 429 throws, which fail-closed handling turns into a 503 for a
   paying customer. **Positive answers only:** caching a grant costs at most
   `cacheMs` of access after a cancellation, while caching a denial would lock
   out a customer who just subscribed. Keyed by credential, sandbox flag and
@@ -66,7 +66,7 @@ gates fail closed.)
 ### Tests
 
 - **The resolution matrix is generated, not enumerated:** every source crossed
-  with every answer, 64 combinations, asserting one property — *if any source
+  with every answer, 64 combinations, asserting one property - *if any source
   reports POSITIVE, the resolved answer is POSITIVE*. Each of the five
   historical bugs is one cell of that table, and so is the next one. Adding a
   sixth source adds its four answers automatically.
@@ -80,14 +80,14 @@ gates fail closed.)
   have shipped real regressions, all now fixed and covered:
   - `classifyEnvelope()` classified POSITIVE from the per-entitlement `details`
     map while `customerStatus()` built `active[]` only from the `entitlements`
-    summary — so a build reporting detail without the summary won the ladder
+    summary - so a build reporting detail without the summary won the ladder
     and then reported nothing. That is the exact "paying subscriber reads as
     not entitled" defect this work exists to end, reintroduced by the fix for
     it. The generated matrix missed it because its POSITIVE fixture always set
     the summary; it now runs every combination once per POSITIVE *shape*, and
     reverting the fix fails the matrix.
   - The legacy V3 offerings channel labels its single offering `id: ''`, which
-    the new paywall check read as proof of absence — refusing **every** named
+    the new paywall check read as proof of absence - refusing **every** named
     offering on classic builds. An unlabelled list is now "no evidence".
   - The server cache returned its stored array by reference, so an ordinary
     in-place transform by a caller rewrote the cache and turned later checks
@@ -97,13 +97,13 @@ gates fail closed.)
 
 ### Added
 
-- **`whoami()`** — which RevenueCat customer is this device, right now? Reads
+- **`whoami()`** - which RevenueCat customer is this device, right now? Reads
   the native SDK's own identity rather than this package's local state, which
   is the distinction that matters after a migration: the SDK persists identity
   across app restarts, so a device can already be signed in before your
   JavaScript says a word. Returns `{ id, user, anonymous, registered, source }`,
   where `source` (`'native'` / `'local'` / `'web'`) keeps "we could not ask"
-  from being mistaken for "nobody is signed in". Native on both runtimes —
+  from being mistaken for "nobody is signed in". Native on both runtimes -
   Despia V4 via the `whoami` action, V3 via `revenuecat://whoami` on bridge ≥ 2.
   Documented alongside the identity-migration cases: anonymous → account
   (history merges), account switch on a shared device (catalog dropped), and
@@ -114,7 +114,7 @@ gates fail closed.)
 - **The exact server return payloads are now documented.** `entitlements()`
   was described in half a line ("active entitlements with expiry") and its
   shape was never shown, so the only place the contract existed was the
-  TypeScript declaration — invisible to a Deno backend, a JavaScript consumer,
+  TypeScript declaration - invisible to a Deno backend, a JavaScript consumer,
   or an AI assistant reading the README. It resolves an **array** of
   `{ id, expires }`, and reading it with `Object.keys()` yields positions
   (`["0","1"]`) rather than ids. That failure is quiet: array indices are valid
@@ -131,11 +131,11 @@ gates fail closed.)
   when a request carries no signed-in session rather than returning `null`, and
   the documented example called it outside the `try`, so anyone copying it got
   an uncaught throw surfacing as `500 "Authentication required to view users"`
-  — which reads as a broken purchase and is not one. The example now catches it
+  - which reads as a broken purchase and is not one. The example now catches it
   and answers `401`, and the three denials are spelled out: **401** nobody is
   signed in (send them to sign-in), **402** signed in but not subscribed (show
   the paywall), **503** cannot verify right now (retry, and never show a
-  paywall — a paying subscriber must not be asked to buy again because
+  paywall - a paying subscriber must not be asked to buy again because
   RevenueCat blipped). Troubleshooting entries in the README and the
   entitlements guide are keyed to the literal error text.
 
@@ -147,7 +147,7 @@ gates fail closed.)
   to the project rather than to a store. Includes a prefix table
   (`appl_`/`goog_`/`sk_`, and which are safe in client code), a single-platform
   column for iOS-only and Android-only apps, and a troubleshooting entry for the
-  symptom this causes — one platform working while the other is entirely dead.
+  symptom this causes - one platform working while the other is entirely dead.
 - The same clarification now appears wherever a key is configured, so it is
   found from any direction: the `ServerOptions.key` JSDoc, the `server.cjs`
   header, the missing-key error message, SPEC.md and ENTITLEMENTS.md.
@@ -157,7 +157,7 @@ gates fail closed.)
 ### Fixed
 
 - **Ships the money-critical and server hardening that landed on main after
-  `1.6.0` was published** (PRs #11–#15): `plans()` no longer mixes offerings
+  `1.6.0` was published** (PRs #11-#15): `plans()` no longer mixes offerings
   so a promo price can be shown and a full price charged; catalog cache is
   scoped so short ids cannot be repointed between render and purchase;
   server sandbox checks use the v1 path that actually supports
@@ -184,9 +184,9 @@ gates fail closed.)
   had its answer deleted by the listener setup and the call waited for the
   full timeout.
 - **Any identity change invalidates the cached catalog.** `user(newId)` now
-  clears the plan cache like `logout()` always did — and so does identity
+  clears the plan cache like `logout()` always did - and so does identity
   adoption, when `user()` with no arguments picks up a login the native SDK
-  persisted — so targeted offerings can never price one user off another
+  persisted - so targeted offerings can never price one user off another
   user's catalog.
 - **The unsubscribe function returned by `on()` no longer leaks.** It now
   releases the package's own bookkeeping too (previously only `off()` did),
@@ -196,14 +196,14 @@ gates fail closed.)
   hanging for the full window and then resolving `ok: true`; the timeout case
   now resolves `ok: false, code: 'timeout'`. On the classic runtime it now
   requires bridge proof like `redeem()` and `whoami` (unproven old builds
-  route unknown schemes into a catch-all that can raise a native alert) —
+  route unknown schemes into a catch-all that can raise a native alert) -
   proving it with the catalog read when nothing else has run yet, so an
   account screen that calls `center()` first still opens on a capable build.
   An ambiguous presentation-ack failure keeps waiting for the real dismissal
   instead of settling early.
 - **Unknown intro prices stay unknown.** The legacy offerings channel reports
   no numeric intro price; `plans()` now preserves `price.value: null` for it
-  instead of coercing to `0` (types updated accordingly) — so an unknown
+  instead of coercing to `0` (types updated accordingly) - so an unknown
   price can never render as "$0.00".
 - **`buy(object)` with no usable id fails fast** with `missing_param` instead
   of sending the string "[object Object]" to the store.
@@ -224,7 +224,7 @@ gates fail closed.)
   known seam, a "nothing active" answer from v2 is now confirmed against v1
   before it is reported. Granting wrongly costs a little revenue; denying a
   paying customer costs the customer. The extra request is spent **only** when
-  v2 reports nothing for a customer it knows — a positive answer and an
+  v2 reports nothing for a customer it knows - a positive answer and an
   unknown customer both cost nothing extra, and an unknown customer is not
   looked up in v1 at all, so no phantom customer records are created.
   `{ confirmDenials: false }` opts out.
@@ -246,7 +246,7 @@ gates fail closed.)
 
 - **CI verified the working tree, not the package it publishes.** The
   "package contents resolve" step required files from the git checkout, so it
-  passed even when a file was missing from `package.json` "files" — dropping
+  passed even when a file was missing from `package.json` "files" - dropping
   `server.d.ts` and `server.js` left `npm test`, the resolve step, the type
   fixtures and publint all green while the published tarball gave consumers
   `MODULE_NOT_FOUND`. That is the exact regression the node10 fixture was
@@ -281,15 +281,15 @@ gates fail closed.)
   shown and a full price charged.** It flattened all offerings instead of
   describing one, letting a non-current offering's package claim the canonical
   short id (`monthly`) that the README tells you to pass to `buy()`. In a
-  project with a second offering — an experiment, a win-back, a legacy price,
-  which is RevenueCat's normal state — `buy(plans[0].id)` charged that
+  project with a second offering - an experiment, a win-back, a legacy price,
+  which is RevenueCat's normal state - `buy(plans[0].id)` charged that
   offering's SKU, and the current offering's plan lost its short id. `plans()`
   now describes exactly one offering: the filtered one when you pass an id,
   otherwise the current one.
 - **An unrelated catalog read could repoint a short id at a different SKU
   between render and purchase.** The plan cache was a single unscoped slot, so
   a prefetch or another screen calling `products()` after you rendered
-  `plans('winback')` made `buy('monthly')` resolve against the full catalog —
+  `plans('winback')` made `buy('monthly')` resolve against the full catalog -
   the user saw one price and was charged another. The cache is now keyed by
   offering scope, and a bare `buy()` resolves against the scope `plans()` last
   rendered. Catalog reads deliberately do not move that scope: you are charged
@@ -300,13 +300,13 @@ gates fail closed.)
   paying customer while the restore button worked. Both now use the same
   budget.
 - **`center()` could hang for 30 minutes on a terminal error.** Only four error
-  codes settled it; every other code the native module can return — including
+  codes settled it; every other code the native module can return - including
   `not_ready`, which is likely when a "Manage subscription" tap happens early
-  in launch — fell through to the sheet timeout. Now only an ambiguous
+  in launch - fell through to the sheet timeout. Now only an ambiguous
   presentation-ack timeout keeps waiting; everything else settles immediately.
 - **`redeem()` answered `unsupported` on a cold first call** on builds that do
   support it, because it required bridge proof without probing for it. It now
-  probes the same way `center()` does — relevant since "Have a code?" is often
+  probes the same way `center()` does - relevant since "Have a code?" is often
   the first RevenueCat call an app makes.
 - **A zero-entitlement customer envelope still outranked store history.**
   Current builds always set `details`, and `{}` is truthy, so the guard added
@@ -328,7 +328,7 @@ gates fail closed.)
 - **`plan.offers` was documented as "filled by newer builds". It is always
   empty.** Neither native bridge emits a per-product offer list, so the array
   is reserved, not conditionally populated. Same correction for
-  `trial.eligible` / `intro.eligible`, which are always `null` — the store
+  `trial.eligible` / `intro.eligible`, which are always `null` - the store
   enforces eligibility at purchase, so that is by design rather than a gap to
   work around.
 - **Android paywall purchases resolve `product` and `transaction` as `null`**
@@ -345,7 +345,7 @@ gates fail closed.)
 
 - **Server: sandbox purchases can be verified.** RevenueCat's API answers
   with PRODUCTION purchases only, so a Sandbox Apple ID / Play license-tester
-  purchase was invisible to `entitled()` while the device could see it — the
+  purchase was invisible to `entitled()` while the device could see it - the
   client said entitled and the server said not, all through sandbox testing.
   Pass `{ sandbox: true }` (or set `RC_SANDBOX=true`) to send RevenueCat's
   `X-Is-Sandbox` header; production calls never carry it. The README's Testing
@@ -356,7 +356,7 @@ gates fail closed.)
   default (`{ timeout: ms }` to change), so a hung connection can no longer
   hang a Base44 backend function.
 - **Server: honest v2 fallback.** Only a v2 key/project mismatch (401/403/404)
-  falls back to v1 — and the verdict is remembered, so a misconfigured v2
+  falls back to v1 - and the verdict is remembered, so a misconfigured v2
   setup no longer doubles every call's latency. Rate limits (429) and server
   errors now surface to the caller (with `.status` on the error) instead of
   silently spending a second request. A 404 on the customer read is
@@ -382,7 +382,7 @@ gates fail closed.)
 - `center()` callers that treated `ok: true, code: 'timeout'` as success
   should branch on `code`; every other change is behavior users already
   expected. `Plan.price.value` is now typed `number | null` (it was already
-  null-shaped at runtime on modern builds for legacy intro offers — the
+  null-shaped at runtime on modern builds for legacy intro offers - the
   runtime previously masked it as `0`).
 
 ## [1.5.0] - 2026-08-08

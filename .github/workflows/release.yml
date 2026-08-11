@@ -10,7 +10,7 @@
 # matches package.json. That is what makes it safe to leave on.
 #
 # Provenance is a signed, verifiable link between the tarball on npm and the
-# exact commit and workflow run that built it — npm shows it as a "Provenance"
+# exact commit and workflow run that built it - npm shows it as a "Provenance"
 # badge. For a package that handles money and is aimed at people who cannot
 # audit it themselves, that link is worth having.
 #
@@ -59,10 +59,10 @@ jobs:
           # which is the normal state after any non-release commit.
           if npm view "base44-revenuecat@$VERSION" version >/dev/null 2>&1; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::$VERSION is already on npm — nothing to publish."
+            echo "::notice::$VERSION is already on npm - nothing to publish."
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$VERSION is not on npm yet — releasing."
+            echo "::notice::$VERSION is not on npm yet - releasing."
           fi
 
   release:

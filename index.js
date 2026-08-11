@@ -498,7 +498,7 @@
   //      action but not the payload) never terminates resolution.
   //   2. ERROR is not NEGATIVE. On the client, an errored source is skipped
   //      and resolution continues down the ladder. (The /server helpers
-  //      throw instead, so backend gates fail closed — see server.cjs.)
+  //      throw instead, so backend gates fail closed - see server.cjs.)
   //   3. A NEGATIVE from a higher-precedence source does not override a
   //      POSITIVE from a lower one. Confirming before denying is the rule at
   //      every rung, not a special case of any one API version.
@@ -510,7 +510,7 @@
   // entitled" is what happens when an empty-but-authoritative-looking answer
   // is allowed to outrank a truer answer from a lower-precedence source, and
   // it is the same defect wherever it appears in the ladder. Adding a source
-  // means adding a rung to the array — never adding a branch.
+  // means adding a rung to the array - never adding a branch.
   var POSITIVE = 'positive'   // reports at least one ACTIVE entitlement
   var NEGATIVE = 'negative'   // reports entitlement state, and none is active
   var EMPTY = 'empty'         // answered, but carries no entitlement state
@@ -526,7 +526,7 @@
     var details = envelope.details
     if (details && Object.keys(details).length) {
       // A details map is real state. It is POSITIVE only if some entitlement
-      // in it is actually active — otherwise this build is telling us the
+      // in it is actually active - otherwise this build is telling us the
       // customer has none, which is NEGATIVE, not EMPTY.
       for (var k in details) {
         if (details[k] && details[k].active) return POSITIVE
@@ -624,7 +624,7 @@
     // classifyEnvelope() reads the `details` map, so this must read it too. A
     // build that reports per-entitlement detail WITHOUT the entitlements
     // summary is a real, granting answer; deriving active[] only from the
-    // summary would let that rung win the ladder and then report nothing —
+    // summary would let that rung win the ladder and then report nothing -
     // a paying subscriber denied by the very resolver meant to prevent it.
     var details = envelope && envelope.details
     if (details && !active.length) {
@@ -1226,7 +1226,7 @@
       // what the user is charged from have to be the same offering.
       //
       // Verified-missing refuses. Unverifiable (the catalog read itself failed)
-      // still presents — a flaky read must not cost every sale — so this closes
+      // still presents - a flaky read must not cost every sale - so this closes
       // the typo case, which is the one that actually happens, without making
       // the paywall depend on a second network call succeeding.
       if (offering) {
@@ -1256,7 +1256,7 @@
       }
       // A cached catalog is evidence only if it actually lists offerings. A
       // build whose catalog read degraded to the flat product list reports
-      // none, which proves nothing either way — fall through and let the
+      // none, which proves nothing either way - fall through and let the
       // authoritative read answer rather than guessing from it.
       function lists (envelope) {
         var l = envelope && envelope.offerings
@@ -1267,7 +1267,7 @@
           // The legacy V3 offerings channel cannot name what it returned and
           // labels its single offering `id: ''` even when the native side
           // honored the filter. An unlabelled entry proves nothing about a
-          // named offering, so this is no evidence rather than absence —
+          // named offering, so this is no evidence rather than absence -
           // otherwise paywall() refuses EVERY named offering on classic
           // builds and the sale is simply lost.
           if (!l[i].id) return null
@@ -1289,7 +1289,7 @@
       })
       // No usable cache: ask. offers() already answers offeringNotFoundError
       // for an id that matches nothing, including on builds whose catalog read
-      // cannot express offerings at all — so paywall() and plans() refuse the
+      // cannot express offerings at all - so paywall() and plans() refuse the
       // same inputs. A read that throws outright leaves us unable to tell, and
       // there we present: a flaky catalog must not cost every sale.
       var check = self.offers(offering).then(function (envelope) {
@@ -1481,7 +1481,7 @@
       }).then(function (envelope) {
         if (envelope) {
           return self.restore().then(function (r) {
-            // Same ladder, same invariant — restore() has already reduced the
+            // Same ladder, same invariant - restore() has already reduced the
             // store history to a status, so its rung classifies that.
             var rows = r && r.purchases || []
             return resolveEntitlement([
@@ -1616,7 +1616,7 @@
       }
       // Same deferred gate as the identity schemes: an unproven build routes
       // revenuecat://redeem into its license-gated catch-all, which can raise
-      // a native alert. Only fire once an envelope has proven the bridge —
+      // a native alert. Only fire once an envelope has proven the bridge -
       // proving it with the catalog read when nothing else has run yet, since
       // a "Have a code?" button is often the first RevenueCat call an app
       // makes and answering unsupported outright would break it on a capable

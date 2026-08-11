@@ -799,7 +799,7 @@ async function testServer () {
       if (url.includes('starting_after')) {
         // v2 reports expires_at as EPOCH MILLISECONDS (per the API
         // reference), not an ISO string: the mapper must convert it. Use a
-        // FUTURE timestamp — a past one would encode the expectation that an
+        // FUTURE timestamp - a past one would encode the expectation that an
         // expired entitlement is active.
         return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: FUTURE_MS }] }) }
       }
@@ -912,7 +912,7 @@ async function testServer () {
 
   // Sandbox: RevenueCat answers with PRODUCTION purchases only unless the
   // X-Is-Sandbox header is set, so a TestFlight purchase would be invisible
-  // to the gate. Opt-in only — production calls must never carry it.
+  // to the gate. Opt-in only - production calls must never carry it.
   calls.length = 0
   await server.entitled('u1', 'premium', { key: 'appl_pub' })
   assert.ok(!calls[0].headers['X-Is-Sandbox'], 'production calls never claim sandbox')
@@ -968,7 +968,7 @@ async function testServer () {
 async function testMultiOfferingPricing () {
   // A project with more than one offering is RevenueCat's NORMAL state
   // (experiments, promos, win-back, legacy prices). plans() must describe ONE
-  // offering — the current one — or a non-current offering's package claims
+  // offering - the current one - or a non-current offering's package claims
   // the canonical short id like 'monthly' and buy(plans[0].id) charges its
   // SKU at its price.
   function P (id, price, offering) {
@@ -1195,7 +1195,7 @@ const SOURCES = [
     // `entitlements` summary OR as the per-entitlement `details` map. The
     // matrix originally only modelled the summary, which is exactly why it did
     // not catch a resolver that classified from `details` and then built
-    // active[] from the summary — winning the ladder and reporting nothing.
+    // active[] from the summary - winning the ladder and reporting nothing.
     positiveShapes: [
       () => ({ ok: true, entitlements: { active: ['premium'], all: ['premium'] }, user: 'u1', anonymous: false }),
       () => ({ ok: true, details: { premium: { active: true } }, user: 'u1', anonymous: false })
@@ -1343,7 +1343,7 @@ async function testNonDecidingSourceKeepsMetadata () {
 // The matrix asserts grant-vs-deny. These pin the EMPTY/NEGATIVE distinction
 // itself, which the matrix cannot see because both outcomes deny: what differs
 // is WHICH source decides, and therefore which metadata the caller gets back.
-// That matters on the denial path specifically — a lapsed subscriber is denied
+// That matters on the denial path specifically - a lapsed subscriber is denied
 // and still needs the `management` link and the entitlement ids to resubscribe.
 async function testEmptyVersusNegativeClassification () {
   const build = (mod) => {
@@ -1359,7 +1359,7 @@ async function testEmptyVersusNegativeClassification () {
   const INACTIVE = [{ productId: 'premium_monthly', entitlementId: 'premium', isActive: false, type: 'subscription' }]
 
   // 1. `details: {}` is a bare ack, not an authoritative "none active". It is
-  //    EMPTY, so the store history — which does know about premium — decides.
+  //    EMPTY, so the store history - which does know about premium - decides.
   let iap = build({
     customer: () => Promise.resolve({ ok: true, details: {}, subscriptions: [{ id: 's1' }] }),
     entitlements: () => Promise.reject({ code: 'unknown_action' }),
@@ -1384,7 +1384,7 @@ async function testEmptyVersusNegativeClassification () {
 
   // 2b. And when that details map DOES report something active, the envelope
   //     must actually say so. classifyEnvelope reads `details`, so the status
-  //     it produces has to read it too — otherwise the top rung wins the
+  //     it produces has to read it too - otherwise the top rung wins the
   //     ladder and then reports nothing, denying a paying subscriber.
   iap = build({
     customer: () => Promise.resolve({ ok: true, details: { premium: { active: true } } }),
@@ -1525,7 +1525,7 @@ async function testMoneyPathInvariants () {
 
   // INVARIANT 4: a build whose catalog read degrades to the flat product list
   // cannot name offerings at all. plans() already refuses a named offering
-  // there — it cannot know which flat products belong to it — so paywall()
+  // there - it cannot know which flat products belong to it - so paywall()
   // refuses the same input, and the two stay consistent. The bare paywall()
   // is unaffected, because nothing was named and nothing can mismatch.
   // (Contrast with an offerings list that exists but is UNLABELLED, and with a
@@ -1546,8 +1546,8 @@ async function testMoneyPathInvariants () {
   global.window = degraded
   global.self = degraded
   iap = freshRequire()
-  // plans() already refuses here — it cannot know which flat products belong
-  // to the named offering — so paywall() refusing the same input is the
+  // plans() already refuses here - it cannot know which flat products belong
+  // to the named offering - so paywall() refusing the same input is the
   // consistent answer, and the alternative is showing default pricing under a
   // promo's name.
   const degradedPlans = await iap.plans('blackfriday')
@@ -1567,7 +1567,7 @@ async function testMoneyPathInvariants () {
   // legacy V3 offerings channel cannot name what it returned and labels its
   // single offering `id: ''` even when the native side honoured the filter.
   // Treating that as "your offering is missing" refuses every named offering
-  // on classic builds — the paywall simply never opens and the sale is lost.
+  // on classic builds - the paywall simply never opens and the sale is lost.
   const legacy = {
     navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' }, localStorage: null
   }
@@ -1587,7 +1587,7 @@ async function testMoneyPathInvariants () {
   await new Promise((r) => setTimeout(r, 700))
   assert.ok(
     fired.some((u) => u.indexOf('launchPaywall') !== -1),
-    'an unlabelled offerings list must not refuse a named offering — the paywall has to open'
+    'an unlabelled offerings list must not refuse a named offering - the paywall has to open'
   )
   legacyResult.catch(() => {})
 
@@ -1595,7 +1595,7 @@ async function testMoneyPathInvariants () {
 }
 
 // whoami(): which RevenueCat customer is this device, and did a migration
-// actually land? The migration case is the reason it exists — an anonymous
+// actually land? The migration case is the reason it exists - an anonymous
 // device buying, then the user signing in, must end up as ONE customer.
 async function testWhoami () {
   // V4, anonymous: RevenueCat minted its own id, purchases attach to the
@@ -1747,7 +1747,7 @@ async function testStatusSourceInvariants () {
 async function testServerIdentityAndMatching () {
   // The whole point of the server module is that the client cannot be
   // trusted, so the gate must read the entitlements of the user it was ASKED
-  // about — with a mock that answers differently per user, not one subscriber
+  // about - with a mock that answers differently per user, not one subscriber
   // for everybody.
   const seen = []
   const PEOPLE = {
@@ -1966,7 +1966,7 @@ async function testLapsedAndPlanResolution () {
   assert.strictEqual(mappedPlans[0].intro.type, 'payg', 'a multi-cycle intro is pay-as-you-go, not pay-up-front')
 
   // info() on a build with NO per-entitlement details falls back to inferring
-  // from store history — that path must report a lapsed entitlement as
+  // from store history - that path must report a lapsed entitlement as
   // inactive just as the native-details path does.
   const win4 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
   win4.dsx = {
@@ -2036,7 +2036,7 @@ async function testSharedResultChannelIsolation () {
   // The real hazard: a STRAY paywall outcome landing on the shared channel
   // while a purchase is in flight (a late dismissal, a duplicate emit). The
   // purchase must ignore it and wait for its own result, or the app records a
-  // sale the store never made — or reports a cancel on a completed purchase.
+  // sale the store never made - or reports a cancel on a completed purchase.
   const win2 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
   Object.defineProperty(win2, 'despia', {
     set (cmd) {
@@ -2150,7 +2150,7 @@ async function testV2DenialIsConfirmed () {
   // before the denial stands. This is the whole point.
   assert.strictEqual(await server.entitled('grace_user', 'premium', v2), true, 'a v2 denial is confirmed against v1 before a paying customer loses access')
 
-  // A genuinely non-subscribed user is still denied — the confirmation must
+  // A genuinely non-subscribed user is still denied - the confirmation must
   // not turn into a free pass.
   assert.strictEqual(await server.entitled('freeloader', 'premium', v2), false, 'confirming a denial never grants access to a non-subscriber')
 
@@ -2168,7 +2168,7 @@ async function testV2DenialIsConfirmed () {
 }
 
 // §4: the opt-in answer cache. The asymmetry is the whole point, and it is
-// exactly the kind of thing that rots silently if untested — caching denials
+// exactly the kind of thing that rots silently if untested - caching denials
 // would be invisible in every happy-path test and would lock out customers
 // who just paid.
 async function testServerAnswerCache () {
@@ -2256,7 +2256,7 @@ async function testServerAnswerCache () {
   await entitlements('shared', { key: 'appl_shared', cacheMs: 3600000 })  // long reader
   assert.strictEqual(reads, 2, 'a short-lived entry is not resurrected by a long-TTL reader')
 
-  // Concurrent checks on a cold cache must collapse into one request — the
+  // Concurrent checks on a cold cache must collapse into one request - the
   // stampede the cache exists to prevent.
   PEOPLE.burst = { premium: { expires_date: FUTURE, product_identifier: 'p' } }
   reads = 0
@@ -2268,7 +2268,7 @@ async function testServerAnswerCache () {
 
   // THE DOCUMENTED PAYLOAD. The README, the JSDoc and the .d.ts all promise
   // an ARRAY of { id, expires }. If that ever became a keyed object, every
-  // consumer doing .map(e => e.id) breaks — and consumers doing Object.keys()
+  // consumer doing .map(e => e.id) breaks - and consumers doing Object.keys()
   // would start "working", which is worse. Pin the contract.
   PEOPLE.shaped = {
     premium: { expires_date: FUTURE, product_identifier: 'p' },
@@ -2282,11 +2282,11 @@ async function testServerAnswerCache () {
   for (const row of shaped) {
     assert.deepStrictEqual(
       Object.keys(row).sort(), ['expires', 'id'],
-      'each row is exactly { id, expires } — extra fields would be an undocumented contract'
+      'each row is exactly { id, expires } - extra fields would be an undocumented contract'
     )
   }
   // And the failure this pins: positions, not ids. Documented as the trap.
-  assert.deepStrictEqual(Object.keys(shaped), ['0', '1'], 'Object.keys gives positions — which is why the docs call it out')
+  assert.deepStrictEqual(Object.keys(shaped), ['0', '1'], 'Object.keys gives positions - which is why the docs call it out')
 
   console.log('  server payload: entitlements() is an array of { id, expires }, as documented ✓')
   console.log('  server cache: copies out, writer-owned TTL, in-flight joins, grants only ✓')
@@ -2803,7 +2803,7 @@ async function testOnUnsubscribeReleasesBookkeeping () {
 
 async function testCenterHonesty () {
   // A build without Customer Center must say so immediately, and a silent
-  // native layer must resolve ok:false — never a 30-minute wait that then
+  // native layer must resolve ok:false - never a 30-minute wait that then
   // reports success.
   const winNoModule = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
   winNoModule.dsx = { module: {} }             // bus bound, module excluded
