@@ -74,9 +74,40 @@ gates fail closed.)
   bugs: over every plan in every offering, `buy()` charges the product whose
   price was rendered; a plan rendered from one offering can never be purchased
   out of another; a misspelled offering never widens scope.
-- Mutation sweep extended to 41 cases covering the new resolver and the paywall
-  check. 40 killed; the one survivor is an equivalent mutant (two spellings of
-  "no cached evidence" that reach the same refusal on every path).
+- Mutation sweep extended to 45 cases covering the resolver, the paywall check,
+  the server cache and `whoami()`. **45/45 killed, zero survivors.**
+- A full code review of this branch found 15 issues, including three that would
+  have shipped real regressions, all now fixed and covered:
+  - `classifyEnvelope()` classified POSITIVE from the per-entitlement `details`
+    map while `customerStatus()` built `active[]` only from the `entitlements`
+    summary — so a build reporting detail without the summary won the ladder
+    and then reported nothing. That is the exact "paying subscriber reads as
+    not entitled" defect this work exists to end, reintroduced by the fix for
+    it. The generated matrix missed it because its POSITIVE fixture always set
+    the summary; it now runs every combination once per POSITIVE *shape*, and
+    reverting the fix fails the matrix.
+  - The legacy V3 offerings channel labels its single offering `id: ''`, which
+    the new paywall check read as proof of absence — refusing **every** named
+    offering on classic builds. An unlabelled list is now "no evidence".
+  - The server cache returned its stored array by reference, so an ordinary
+    in-place transform by a caller rewrote the cache and turned later checks
+    into denials. It now hands out copies, the TTL belongs to the writer rather
+    than whichever caller reads next, concurrent cold-cache checks join one
+    in-flight request, and refreshing a hot key no longer shrinks the cache.
+
+### Added
+
+- **`whoami()`** — which RevenueCat customer is this device, right now? Reads
+  the native SDK's own identity rather than this package's local state, which
+  is the distinction that matters after a migration: the SDK persists identity
+  across app restarts, so a device can already be signed in before your
+  JavaScript says a word. Returns `{ id, user, anonymous, registered, source }`,
+  where `source` (`'native'` / `'local'` / `'web'`) keeps "we could not ask"
+  from being mistaken for "nobody is signed in". Native on both runtimes —
+  Despia V4 via the `whoami` action, V3 via `revenuecat://whoami` on bridge ≥ 2.
+  Documented alongside the identity-migration cases: anonymous → account
+  (history merges), account switch on a shared device (catalog dropped), and
+  logout rotating to a fresh anonymous customer.
 
 ### Documentation
 

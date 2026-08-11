@@ -154,6 +154,73 @@ On current builds `logout()` also asks the native layer to rotate to a fresh ano
 const premium = user && await revenuecat.has('premium')
 ```
 
+### `revenuecat.whoami()`: which RevenueCat customer is this device?
+
+```javascript
+const me = await revenuecat.whoami()
+// { id: '$RCAnonymousID:ab12…', user: null, anonymous: true, registered: false, source: 'native' }
+```
+
+Answers the question `user(id)` never tells you: **who does RevenueCat
+currently think this device is?** It reads the native SDK's own opinion, not
+this package's local state — which is the distinction that matters, because the
+RevenueCat SDK persists its identity across app restarts. A device can already
+be signed in as someone before your JavaScript has said a word.
+
+| Field | Meaning |
+|---|---|
+| `id` | The customer id RevenueCat is using — either yours, or one it minted (`$RCAnonymousID:…`) |
+| `user` | The id **you** supplied via `user(id)`, or `null` if none |
+| `anonymous` | `true` when purchases attach to the **device**, not to an account |
+| `registered` | `true` when an id you supplied is in force |
+| `source` | `'native'` the SDK answered · `'local'` this build has no identity read, so it is this package's own state · `'web'` not inside an app |
+
+**`source` exists so "we could not ask" is never mistaken for "nobody is signed
+in".** On a build without the native identity read, an answer of `anonymous:
+true` means *we don't know*, and treating it as *this device has no account*
+would be wrong.
+
+#### Identity migration: anonymous → account, and account → account
+
+The edge case worth understanding: a user buys before signing in. RevenueCat
+attaches that purchase to an **anonymous** customer tied to the device. When
+they later sign in, that purchase has to follow them.
+
+```javascript
+const before = await revenuecat.whoami()
+if (before.anonymous) {
+  // Migrates: the native login merges the anonymous purchase history into
+  // this account, so the subscription they already paid for follows them.
+  await revenuecat.user(base44User.id)
+}
+const after = await revenuecat.whoami()   // confirm it landed, don't assume
+```
+
+| Situation | What happens | What you do |
+|---|---|---|
+| Anonymous device buys, then signs in | `user(id)` calls the native login and **merges** the anonymous history into the account | Nothing extra — but `whoami()` afterwards to confirm |
+| Account switch on a shared device (`user_123` → `user_234`) | The cached catalog is dropped, so targeted offerings can never price one account off another's catalog | Re-read `plans()` after switching |
+| Signed-in user signs out | `logout()` rotates the SDK to a **fresh** anonymous customer, so the next person on the device does not inherit access | Gate on your own auth state too |
+| Same person, two devices | Both resolve to the same customer once `user(id)` names them | Always call `user(id)` at sign-in, on every device |
+
+**The one that bites:** a logged-out user on a shared device can still read as
+entitled, because the SDK remembers the last identity across restarts and
+`user()` with no arguments adopts it. Gate on your own auth state as well as
+the entitlement:
+
+```javascript
+const premium = base44User && await revenuecat.has('premium')
+```
+
+**Support-ticket shortcut:** when a customer says "I paid and it's locked",
+`whoami()` is the first thing to ask for. `registered: false` means their
+purchase is attached to a device rather than to their account, and the fix is a
+`user(id)` call at sign-in that your app is missing.
+
+Both runtimes answer natively: Despia **V4** via the `whoami` action, Despia
+**V3** via `revenuecat://whoami` on builds with bridge ≥ 2. Older builds return
+`source: 'local'` rather than guessing.
+
 ### `revenuecat.plans()`: build your subscription paywall screen
 
 ```javascript

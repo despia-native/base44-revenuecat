@@ -76,6 +76,35 @@ async function main () {
   // ── the secret-key path (v2, with the v1 confirmation) ──────────────────
   if (CFG.secret && CFG.project) {
     console.log('\nsecret key (v2):')
+    // FIRST: prove the v2 path is actually reachable. server.cjs deliberately
+    // falls back to v1 on a v2 401/403/404 and remembers it — and v1 accepts
+    // sk_ keys, so every assertion below would answer correctly VIA V1 and the
+    // canary would pass green for the exact drift it exists to catch. Ask v2
+    // directly, outside the helpers, so a revoked or renamed v2 is a failure
+    // rather than an invisible downgrade.
+    try {
+      const res = await fetch(
+        `https://api.revenuecat.com/v2/projects/${encodeURIComponent(CFG.project)}/customers/${encodeURIComponent(CFG.entitledId)}`,
+        { headers: { Authorization: 'Bearer ' + CFG.secret, 'Content-Type': 'application/json' } }
+      )
+      if (!res.ok) {
+        failures.push(
+          `v2 is not reachable for this key/project (HTTP ${res.status}). ` +
+          'Every check below would silently answer via v1, so v2 drift would go unnoticed.'
+        )
+        console.log(`  FAIL v2 customer read → HTTP ${res.status}`)
+      } else {
+        const body = await res.json()
+        if (!body || !Object.prototype.hasOwnProperty.call(body, 'active_entitlements')) {
+          failures.push('v2 customer response no longer carries active_entitlements — the field this package reads.')
+          console.log('  FAIL v2 response shape changed (no active_entitlements)')
+        } else {
+          console.log('  ok   v2 is reachable and still returns active_entitlements')
+        }
+      }
+    } catch (e) {
+      failures.push('v2 reachability probe threw: ' + (e && e.message))
+    }
     await check(
       'entitled customer is granted on v2',
       () => entitled(CFG.entitledId, ENT, { secret: CFG.secret, project: CFG.project }),
@@ -128,18 +157,41 @@ async function main () {
     notes.push('sandbox check skipped (RC_CANARY_SANDBOX_ID unset)')
   }
 
+  // ── the cross-store claim ───────────────────────────────────────────────
+  // The docs, the types and the error message all now tell people that ONE
+  // public key of either platform verifies subscribers from both stores. If
+  // that is ever wrong, someone who configured only an appl_ key silently
+  // denies 100% of their Google Play subscribers with no error anywhere. Set
+  // RC_CANARY_CROSS_STORE_ID to a customer whose purchase came from the OTHER
+  // store than RC_CANARY_PUBLIC_KEY's platform to hold that claim to account.
+  const crossId = process.env.RC_CANARY_CROSS_STORE_ID || ''
+  if (crossId) {
+    console.log('\ncross-store:')
+    await check(
+      'a subscriber from the OTHER store is verified by this key',
+      () => entitled(crossId, ENT, { key: CFG.key }),
+      true
+    )
+  } else {
+    notes.push('cross-store check skipped (RC_CANARY_CROSS_STORE_ID unset) — the "either key verifies both stores" claim is documented but unverified')
+  }
+
   console.log('')
   notes.forEach((n) => console.log('note: ' + n))
   if (failures.length) {
     console.error('\nCANARY FAILED — RevenueCat no longer behaves the way this package assumes:')
     failures.forEach((f) => console.error('  • ' + f))
     console.error('\nThis is not a flaky test. Read the failures above before releasing.')
-    process.exit(1)
+    // exitCode, not exit(): console writes to a pipe (which is what Actions
+    // gives this step) are async, and process.exit() drops whatever has not
+    // flushed — discarding the only output this job produces.
+    process.exitCode = 1
+    return
   }
   console.log('\ncanary passed')
 }
 
 main().catch((e) => {
   console.error('canary crashed:', e)
-  process.exit(1)
+  process.exitCode = 1
 })

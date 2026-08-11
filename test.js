@@ -1191,6 +1191,15 @@ const ANSWERS = ['POSITIVE', 'NEGATIVE', 'EMPTY', 'ERROR']
 const SOURCES = [
   {
     name: 'customer',
+    // Two POSITIVE shapes, because a build may report entitlement state as the
+    // `entitlements` summary OR as the per-entitlement `details` map. The
+    // matrix originally only modelled the summary, which is exactly why it did
+    // not catch a resolver that classified from `details` and then built
+    // active[] from the summary — winning the ladder and reporting nothing.
+    positiveShapes: [
+      () => ({ ok: true, entitlements: { active: ['premium'], all: ['premium'] }, user: 'u1', anonymous: false }),
+      () => ({ ok: true, details: { premium: { active: true } }, user: 'u1', anonymous: false })
+    ],
     reply: {
       POSITIVE: () => ({ ok: true, entitlements: { active: ['premium'], all: ['premium'] }, user: 'u1', anonymous: false }),
       // Knows about the entitlement, reports it inactive. This is the case
@@ -1233,11 +1242,18 @@ async function testResolutionMatrix () {
   let checked = 0
   let positives = 0
 
+  // Each combination is run once per POSITIVE shape a source declares, so a
+  // second way of expressing "granting" is covered everywhere the first is.
+  const shapeCount = Math.max(...SOURCES.map((s) => (s.positiveShapes || [null]).length))
   for (const combo of combos) {
+   for (let shape = 0; shape < shapeCount; shape++) {
     const mod = {}
     SOURCES.forEach((src, i) => {
       const answer = combo[i]
-      const make = src.reply[answer]
+      let make = src.reply[answer]
+      if (answer === 'POSITIVE' && src.positiveShapes) {
+        make = src.positiveShapes[Math.min(shape, src.positiveShapes.length - 1)]
+      }
       mod[src.name] = make
         ? () => Promise.resolve(make())
         : () => Promise.reject({ code: 'unknown_action' })
@@ -1282,13 +1298,14 @@ async function testResolutionMatrix () {
     assert.strictEqual(typeof status.ok, 'boolean', `status stays well-formed [${label}]`)
     assert.ok(Array.isArray(status.active) && Array.isArray(status.all), `arrays stay arrays [${label}]`)
     checked++
+   }
   }
 
   // Guard the generator itself: if a refactor makes cartesian() return a
   // trivial table, the property above would pass vacuously.
-  assert.strictEqual(checked, Math.pow(ANSWERS.length, SOURCES.length), 'every cell ran')
+  assert.strictEqual(checked, Math.pow(ANSWERS.length, SOURCES.length) * shapeCount, 'every cell ran, once per positive shape')
   assert.ok(positives > 0 && positives < checked, 'the table contains both outcomes')
-  console.log(`  resolution matrix: ${checked} source/answer combinations, any-POSITIVE-wins holds ✓`)
+  console.log(`  resolution matrix: ${checked} source/answer/shape combinations, any-POSITIVE-wins holds ✓`)
 }
 
 // Rule 5, as its own property: a source that did not decide still contributes
@@ -1353,15 +1370,30 @@ async function testEmptyVersusNegativeClassification () {
   assert.deepStrictEqual(s.subscriptions, [{ id: 's1' }], 'the non-deciding envelope still contributes metadata')
 
   // 2. A details map WITH content and nothing active is a real NEGATIVE: the
-  //    build is reporting state, and it outranks the lower rungs.
+  //    build is reporting state, and it outranks the lower rungs. The two
+  //    sources name DIFFERENT entitlements so the assertion can tell which one
+  //    actually decided.
   iap = build({
-    customer: () => Promise.resolve({ ok: true, details: { premium: { active: false } }, subscriptions: [{ id: 's1' }] }),
+    customer: () => Promise.resolve({ ok: true, details: { legacy: { active: false } }, subscriptions: [{ id: 's1' }] }),
     entitlements: () => Promise.reject({ code: 'unknown_action' }),
-    history: () => Promise.resolve(INACTIVE)
+    history: () => Promise.resolve(INACTIVE)                     // knows 'premium'
   })
   s = await iap.status()
   assert.deepStrictEqual(s.active, [], 'nothing is active either way')
-  assert.deepStrictEqual(s.all, [], 'a populated details map decides, so the envelope shape answers')
+  assert.deepStrictEqual(s.all, ['legacy'], 'the populated details map decided, not the store history')
+
+  // 2b. And when that details map DOES report something active, the envelope
+  //     must actually say so. classifyEnvelope reads `details`, so the status
+  //     it produces has to read it too — otherwise the top rung wins the
+  //     ladder and then reports nothing, denying a paying subscriber.
+  iap = build({
+    customer: () => Promise.resolve({ ok: true, details: { premium: { active: true } } }),
+    entitlements: () => Promise.reject({ code: 'unknown_action' }),
+    history: () => Promise.resolve([])
+  })
+  s = await iap.status()
+  assert.deepStrictEqual(s.active, ['premium'], 'a details-only envelope that grants must report the grant')
+  assert.strictEqual(await iap.has('premium'), true, 'and the gate opens')
 
   // 3. History rows that are all inactive are NEGATIVE, not EMPTY: the device
   //    knows about this entitlement, so it outranks an empty entitlements read.
@@ -1491,10 +1523,13 @@ async function testMoneyPathInvariants () {
   assert.strictEqual(cached.code, 'offeringNotFoundError', 'a cached catalog refuses a missing offering too')
   assert.strictEqual(calls, before, 'and answers from cache without another catalog read')
 
-  // INVARIANT 4: unverifiable is not the same as missing. A build whose
-  // catalog read degrades to the flat product list reports no offerings at
-  // all — that is no evidence the requested offering is absent, and refusing
-  // there would cost every sale on those binaries. It must still present.
+  // INVARIANT 4: a build whose catalog read degrades to the flat product list
+  // cannot name offerings at all. plans() already refuses a named offering
+  // there — it cannot know which flat products belong to it — so paywall()
+  // refuses the same input, and the two stay consistent. The bare paywall()
+  // is unaffected, because nothing was named and nothing can mismatch.
+  // (Contrast with an offerings list that exists but is UNLABELLED, and with a
+  // catalog read that throws: both are "no evidence" and still present.)
   const degraded = {
     navigator: { userAgent: 'despia-iphone' }, native_os: 'ios',
     __dsxWire: {}, localStorage: null,
@@ -1528,7 +1563,122 @@ async function testMoneyPathInvariants () {
   const bare = await iap.paywall()
   assert.notStrictEqual(bare.code, 'offeringNotFoundError', 'the default paywall is unaffected')
 
+  // INVARIANT 5: an UNLABELLED offerings list is not evidence of absence. The
+  // legacy V3 offerings channel cannot name what it returned and labels its
+  // single offering `id: ''` even when the native side honoured the filter.
+  // Treating that as "your offering is missing" refuses every named offering
+  // on classic builds — the paywall simply never opens and the sale is lost.
+  const legacy = {
+    navigator: { userAgent: 'Mozilla/5.0 (iPhone) despia-iphone' }, localStorage: null
+  }
+  global.window = legacy
+  global.self = legacy
+  iap = freshRequire()
+  const fired = []
+  Object.defineProperty(legacy, 'despia', { set (cmd) { fired.push(cmd) }, get () { return '' } })
+  iap._catalogs[''] = {
+    envelope: { ok: true, offerings: [{ id: '', current: true, packages: [] }], products: [{ id: 'p' }] },
+    plans: []
+  }
+  const legacyResult = iap.paywall('blackfriday')
+  // The check falls through to a catalog read (an unlabelled list proves
+  // nothing), which is raced against T.probe and then presents. Wait past that
+  // budget rather than sampling before the race resolves.
+  await new Promise((r) => setTimeout(r, 700))
+  assert.ok(
+    fired.some((u) => u.indexOf('launchPaywall') !== -1),
+    'an unlabelled offerings list must not refuse a named offering — the paywall has to open'
+  )
+  legacyResult.catch(() => {})
+
   console.log('  money path: render/charge identity, offering isolation, no silent widening ✓')
+}
+
+// whoami(): which RevenueCat customer is this device, and did a migration
+// actually land? The migration case is the reason it exists — an anonymous
+// device buying, then the user signing in, must end up as ONE customer.
+async function testWhoami () {
+  // V4, anonymous: RevenueCat minted its own id, purchases attach to the
+  // device rather than to an account.
+  let win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      whoami: () => Promise.resolve({ app_user_id: '$RCAnonymousID:ab12', is_anonymous: true })
+    } } }
+  }
+  global.window = win; global.self = win
+  let iap = freshRequire()
+  let me = await iap.whoami()
+  assert.strictEqual(me.anonymous, true, 'an anonymous device reports anonymous')
+  assert.strictEqual(me.registered, false, 'and not registered')
+  assert.strictEqual(me.id, '$RCAnonymousID:ab12', 'the RevenueCat-minted id is surfaced')
+  assert.strictEqual(me.source, 'native', 'the native SDK answered')
+
+  // THE MIGRATION: anonymous device → signed-in account. user(id) must call
+  // the native login (which merges the anonymous purchase history), and a
+  // follow-up whoami() must report the new identity, not the old one.
+  const logins = []
+  let identity = { app_user_id: '$RCAnonymousID:ab12', is_anonymous: true }
+  win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', __dsxWire: {}, localStorage: null,
+    dsx: { module: { revenuecat: {
+      whoami: () => Promise.resolve(identity),
+      login: ({ external_id }) => {
+        logins.push(external_id)
+        identity = { app_user_id: external_id, is_anonymous: false }
+        return Promise.resolve({ ok: true })
+      }
+    } } }
+  }
+  global.window = win; global.self = win
+  iap = freshRequire()
+  assert.strictEqual((await iap.whoami()).anonymous, true, 'starts anonymous')
+  await iap.user('user_234')
+  await new Promise((r) => setTimeout(r, 20))            // login is fire-and-forget
+  assert.deepStrictEqual(logins, ['user_234'], 'user(id) calls the native login so history merges')
+  me = await iap.whoami()
+  assert.strictEqual(me.registered, true, 'the device is now a registered customer')
+  assert.strictEqual(me.user, 'user_234', 'and it is the account we migrated to')
+  assert.strictEqual(me.anonymous, false, 'no longer anonymous')
+
+  // ACCOUNT SWITCH on a shared device: 123 → 234. The catalog cached for the
+  // first account must not price the second.
+  await iap.user('user_123')
+  await iap.plans().catch(() => {})
+  await iap.user('user_234')
+  assert.deepStrictEqual(iap._catalogs, {}, 'switching accounts drops the previous catalog')
+
+  // V3 bridge >= 2 answers the same question over the scheme channel.
+  win = {
+    navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', localStorage: null,
+    setTimeout: setTimeout, clearTimeout: clearTimeout
+  }
+  global.window = win; global.self = win
+  iap = freshRequire()
+  iap._bridge = 2
+  const v3 = iap.whoami()
+  await new Promise((r) => setTimeout(r, 10))
+  win.revenueCatUser = { ok: true, user: 'user_777', anonymous: false }
+  if (typeof win.onRevenueCatUser === 'function') win.onRevenueCatUser(win.revenueCatUser)
+  const got = await v3
+  assert.strictEqual(got.source, 'native', 'V3 bridge>=2 has a real identity read')
+
+  // A build with NO identity read must say so rather than claiming anonymous:
+  // "we could not ask" and "nobody is signed in" are different answers.
+  win = { navigator: { userAgent: 'despia-iphone' }, native_os: 'ios', localStorage: null }
+  global.window = win; global.self = win
+  iap = freshRequire()
+  iap._bridge = 1
+  const legacy = await iap.whoami()
+  assert.strictEqual(legacy.source, 'local', 'an old build reports a local answer, not a native one')
+
+  // The browser preview is neither.
+  win = { navigator: { userAgent: 'Mozilla/5.0' }, localStorage: null }
+  global.window = win; global.self = win
+  iap = freshRequire()
+  assert.strictEqual((await iap.whoami()).source, 'web', 'the browser preview says web')
+
+  console.log('  whoami: anonymous vs registered, migration merges, switch clears catalog, source is honest ✓')
 }
 
 async function testStatusSourceInvariants () {
@@ -2085,7 +2235,38 @@ async function testServerAnswerCache () {
   await entitled('payer', 'premium', { key: 'appl_three', cacheMs: 30000, sandbox: true })
   assert.strictEqual(reads, 2, 'sandbox does not answer from the production cache')
 
-  console.log('  server cache: opt-in, grants only, denials never held, per-credential ✓')
+  // The cache must hand back a COPY. A caller transforming the returned list
+  // (sort, shift, filter in place) would otherwise rewrite the cache, and a
+  // shrunk list denies a paying subscriber with no read to correct it.
+  PEOPLE.mutator = { premium: { expires_date: FUTURE, product_identifier: 'p' }, pro: { expires_date: FUTURE, product_identifier: 'q' } }
+  await entitlements('mutator', { key: 'appl_mut', cacheMs: 30000 })       // populates
+  const served = await entitlements('mutator', { key: 'appl_mut', cacheMs: 30000 })  // FROM the cache
+  served.length = 0                                  // an ordinary in-place transform
+  assert.strictEqual(
+    await entitled('mutator', 'premium', { key: 'appl_mut', cacheMs: 30000 }), true,
+    'a caller mutating the returned list must not corrupt the cache into a denial'
+  )
+
+  // The TTL belongs to the writer, not whichever caller reads next. A 5s entry
+  // must not be served for an hour just because the next caller asked for one.
+  PEOPLE.shared = { premium: { expires_date: FUTURE, product_identifier: 'p' } }
+  reads = 0
+  await entitlements('shared', { key: 'appl_shared', cacheMs: 5 })     // short writer
+  await new Promise((r) => setTimeout(r, 25))
+  await entitlements('shared', { key: 'appl_shared', cacheMs: 3600000 })  // long reader
+  assert.strictEqual(reads, 2, 'a short-lived entry is not resurrected by a long-TTL reader')
+
+  // Concurrent checks on a cold cache must collapse into one request — the
+  // stampede the cache exists to prevent.
+  PEOPLE.burst = { premium: { expires_date: FUTURE, product_identifier: 'p' } }
+  reads = 0
+  const bursts = await Promise.all(
+    Array.from({ length: 5 }, () => entitled('burst', 'premium', { key: 'appl_burst', cacheMs: 30000 }))
+  )
+  assert.deepStrictEqual(bursts, [true, true, true, true, true], 'every concurrent caller gets the right answer')
+  assert.strictEqual(reads, 1, '5 concurrent cold-cache checks cost ONE RevenueCat request')
+
+  console.log('  server cache: copies out, writer-owned TTL, in-flight joins, grants only ✓')
 }
 
 async function testServerHardening () {
@@ -2764,6 +2945,7 @@ async function testBuyRejectsUnusableInput () {
   await testEventDelivery()
   await testCatalogShapeInvariants()
   await testStatusSourceInvariants()
+  await testWhoami()
   await testResolutionMatrix()
   await testEmptyVersusNegativeClassification()
   await testMoneyPathInvariants()

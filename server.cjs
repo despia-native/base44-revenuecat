@@ -179,26 +179,42 @@ const lookupMiss = {}
 // an entry. Opt in per call with { cacheMs: 30000 }.
 const answerCache = new Map()
 const ANSWER_CACHE_MAX = 5000
+// In-flight reads, so N concurrent gate checks on a cold cache make ONE
+// request rather than N.
+const answerInflight = {}
 
 function answerKey (user, c) {
   return c.secret + '|' + (c.project || '') + '|' + (c.sandbox ? 's' : 'p') + '|' + user
 }
 
-function cachedAnswer (key, ttl) {
+function cachedAnswer (key) {
   const hit = answerCache.get(key)
   if (!hit) return null
-  if (hit.at <= Date.now() - ttl) { answerCache.delete(key); return null }
-  return hit.active
+  // The expiry is the one the WRITER intended, not whatever ttl this caller
+  // happens to pass. Two call sites sharing a user and credential — a webhook
+  // handler on 5s and a page gate on an hour — would otherwise let the gate
+  // serve the webhook's short-lived entry for the full hour.
+  if (hit.expires <= Date.now()) { answerCache.delete(key); return null }
+  // A COPY. Returning the stored array by reference lets an ordinary caller
+  // transform (sort, shift, filter in place) rewrite the cache, and a shrunk
+  // list turns later checks into denials for a paying subscriber with no
+  // network read to correct it.
+  return hit.active.slice()
 }
 
-function rememberAnswer (key, active) {
+function rememberAnswer (key, active, ttl) {
+  // Delete first: re-setting an existing Map key keeps its ORIGINAL insertion
+  // position, so without this a refreshed hot key stays first in line for
+  // eviction while the evict-before-set below silently shrinks the cache by
+  // one on every refresh.
+  answerCache.delete(key)
   // Bounded so a long-lived process checking many distinct ids cannot grow
   // this without limit. Oldest-first eviction: Map preserves insertion order.
   if (answerCache.size >= ANSWER_CACHE_MAX) {
     const oldest = answerCache.keys().next()
     if (!oldest.done) answerCache.delete(oldest.value)
   }
-  answerCache.set(key, { at: Date.now(), active: active })
+  answerCache.set(key, { expires: Date.now() + ttl, active: active.slice() })
 }
 
 // Resolve a `next_page` value against the API host. Every request carries the
@@ -362,12 +378,29 @@ async function entitlements (user, opts) {
   const cacheMs = opts && Number(opts.cacheMs) > 0 ? Number(opts.cacheMs) : 0
   const ckey = cacheMs ? answerKey(user, c) : null
   if (ckey) {
-    const hit = cachedAnswer(ckey, cacheMs)
+    const hit = cachedAnswer(ckey)
     if (hit) return hit
+    // Join an identical check already in flight instead of issuing a second
+    // request. Without this the cache does nothing for the case it was added
+    // for: a cold isolate under load stampedes and 429s, which is exactly
+    // what the lookup map already guards against 200 lines above.
+    const pending = answerInflight[ckey]
+    if (pending) return (await pending).slice()
   }
-  const active = await resolveEntitlements(user, c, opts)
+  let active
+  if (ckey) {
+    const run = resolveEntitlements(user, c, opts)
+    answerInflight[ckey] = run
+    try {
+      active = await run
+    } finally {
+      delete answerInflight[ckey]
+    }
+  } else {
+    active = await resolveEntitlements(user, c, opts)
+  }
   // Only grants are stored. See the note above answerCache.
-  if (ckey && active.length) rememberAnswer(ckey, active)
+  if (ckey && active.length) rememberAnswer(ckey, active, cacheMs)
   return active
 }
 

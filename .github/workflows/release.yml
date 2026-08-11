@@ -56,7 +56,12 @@ jobs:
           fi
           echo "releasing $PKG"
 
+      # Guarded like the version check above it. Without this, dispatching the
+      # workflow from any branch publishes to npm while SKIPPING the tag/version
+      # agreement check — provenance would then attest to a commit that was
+      # never released.
       - name: Publish with provenance
+        if: startsWith(github.ref, 'refs/tags/v')
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
