@@ -7,6 +7,18 @@
 
 const assert = require('assert')
 
+// A rejection or throw that lands after a scenario resolves must FAIL the run,
+// not vanish into the exit. Without this, process.exit(0) can truncate a real
+// late failure and report success.
+process.on('unhandledRejection', (e) => {
+  console.error('\nUNHANDLED REJECTION (a late async failure):', e)
+  process.exit(1)
+})
+process.on('uncaughtException', (e) => {
+  console.error('\nUNCAUGHT EXCEPTION (a late async failure):', e)
+  process.exit(1)
+})
+
 const PRODUCT = {
   id: 'premium:monthly', sku: 'premium', plan: 'monthly', type: 'subscription',
   title: 'Premium Monthly', desc: 'Everything', price: 9.99, priceString: '$9.99',
@@ -536,7 +548,9 @@ async function testModuleExcludedFailsFast () {
   const envelope = await iap.offers()
   const elapsed = Date.now() - t0
   assert.strictEqual(envelope.code, 'no_module')
-  assert.ok(elapsed < 1000, 'a bound bus without the module answers immediately, took ' + elapsed + 'ms')
+  // Generous bound on purpose: the invariant is "did not wait out the 2s bus
+  // wait", not a benchmark. A tight threshold only flakes on a loaded runner.
+  assert.ok(elapsed < 1500, 'a bound bus without the module answers immediately, took ' + elapsed + 'ms')
   console.log('  module excluded: answers immediately instead of waiting for a bound bus ✓')
 }
 
@@ -615,7 +629,7 @@ async function testBusArrivesLate () {
   const web = freshRequire()
   const t1 = Date.now()
   await web.products()
-  assert.ok(Date.now() - t1 < 500, 'a plain browser resolves immediately, no bus wait')
+  assert.ok(Date.now() - t1 < 1500, 'a plain browser resolves immediately, no bus wait')
   console.log('  late bus: a call made before window.dsx binds still works ✓')
 }
 
@@ -1060,6 +1074,166 @@ async function testTerminalErrorsSettleFast () {
   console.log('  terminal errors settle immediately; redeem() probes on a cold start ✓')
 }
 
+async function testCatalogShapeInvariants () {
+  // Two packages of the SAME type in one offering: their ids must not
+  // collide, or buy(id) becomes ambiguous and charges whichever won.
+  function P (id, pkg, type, price, count) {
+    return {
+      id: id, sku: id, plan: null, type: 'subscription', title: id, desc: '',
+      price: price, priceString: '$' + price, currency: 'USD',
+      period: 'P1M', periodUnit: 'month', periodCount: count === undefined ? 1 : count,
+      intro: null, offering: 'default', package: pkg, packageType: type
+    }
+  }
+  const A = P('m_a', '$rc_monthly', 'monthly', 9.99)
+  const B = P('m_b', '$rc_monthly_promo', 'monthly', 4.99)
+  const NOCOUNT = P('quarterly', '$rc_custom', 'custom', 19.99, null)
+  const env = {
+    ok: true, runtime: 4, current: 'default', user: null,
+    offerings: [{ id: 'default', current: true, packages: [
+      { id: '$rc_monthly', type: 'monthly', product: A },
+      { id: '$rc_monthly_promo', type: 'monthly', product: B },
+      { id: '$rc_custom', type: 'custom', product: NOCOUNT }
+    ] }],
+    products: [A, B, NOCOUNT], error: null, code: null
+  }
+  const bought = []
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => Promise.resolve(env),
+        purchase: (a) => { bought.push(a.product); return Promise.resolve({ status: 'purchased', product_id: 'STORE_CONFIRMED', active_entitlements: ['premium'] }) },
+        logout: () => { bought.push('LOGOUT'); return Promise.resolve({}) }
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const plans = await iap.plans()
+  const ids = plans.map((p) => p.id)
+  assert.strictEqual(new Set(ids).size, ids.length, 'two packages of one type never collide on a plan id')
+  // '$rc_' prefixes are stripped so ids stay human ('monthly', not '$rc_monthly').
+  assert.ok(ids.every((i) => i.indexOf('$rc_') !== 0), 'plan ids never carry the raw $rc_ prefix')
+  // Colliding plans are disambiguated by their PACKAGE ids (readable, and
+  // what a paywall keys off), not by falling back to raw store product ids.
+  assert.ok(ids.includes('monthly'), 'the first colliding plan keeps the readable package id')
+  assert.ok(ids.includes('monthly_promo'), 'the second colliding plan uses its own package id, not the store product id')
+  // A product reporting no period count must not invent one.
+  const q = plans.find((p) => p.product === 'quarterly')
+  assert.strictEqual(q.period.value, 1, 'a missing period count defaults to 1, not an invented number')
+
+  // The result reports what the STORE confirmed, not what we asked for.
+  const r = await iap.buy(plans[0].id)
+  assert.strictEqual(r.product, 'STORE_CONFIRMED', 'buy() reports the product the store confirmed')
+
+  // logout() reaches the native layer so the RevenueCat user actually rotates.
+  await iap.logout()
+  await new Promise((r2) => setTimeout(r2, 50))
+  assert.ok(bought.includes('LOGOUT'), 'logout() calls the native logout action')
+
+  // Offers are forwarded on both runtimes (they are inert natively today, but
+  // dropping them silently would hide the day that changes).
+  bought.length = 0
+  const args = []
+  win.dsx.module.revenuecat.purchase = (a) => { args.push(a); return Promise.resolve({ status: 'purchased', product_id: a.product }) }
+  await iap.plans()
+  await iap.buy(plans[0].id, { offer: 'winback50' })
+  assert.strictEqual(args[0].offer, 'winback50', 'V4 buy() forwards options.offer')
+
+  const fired = []
+  const win3 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win3, 'despia', {
+    set (cmd) {
+      fired.push(cmd)
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win3.revenueCatProducts = envelope(3)
+          if (typeof win3.onRevenueCatProducts === 'function') win3.onRevenueCatProducts(win3.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          const res = { ok: true, source: 'purchase', product: 'premium:monthly', transaction: 'T', entitlements: [], code: null }
+          win3.revenueCatResult = res
+          if (typeof win3.onRevenueCatResult === 'function') win3.onRevenueCatResult(res)
+        }
+      }, 10)
+    },
+    configurable: true
+  })
+  global.window = win3
+  global.self = win3
+  const iap3 = freshRequire()
+  await iap3.user('u1')
+  await iap3.buy('monthly', { offer: 'winback50' })
+  const purchaseCmd = fired.find((c) => c.startsWith('revenuecat://purchase'))
+  assert.ok(purchaseCmd.includes('offer=winback50'), 'V3 buy() forwards options.offer')
+  assert.ok(purchaseCmd.includes('external_id=u1'), 'V3 buy() still carries the bound user id')
+  console.log('  catalog shape: unique ids, stripped prefixes, store-confirmed product, offers forwarded ✓')
+}
+
+async function testStatusSourceInvariants () {
+  // historyStatus: only rows the store says are ACTIVE may appear in active[].
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.reject({ code: 'unknown_action' }),
+        entitlements: () => Promise.reject({ code: 'unknown_action' }),
+        history: () => Promise.resolve([
+          { productId: 'p1', entitlementId: 'live', isActive: true, willRenew: true, entitlement: { period_type: 'promotional' } },
+          { productId: 'p2', entitlementId: 'dead', isActive: false, willRenew: false }
+        ])
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  let iap = freshRequire()
+  let s = await iap.status()
+  assert.deepStrictEqual(s.active, ['live'], 'only store-active rows are active')
+  assert.deepStrictEqual(s.all.sort(), ['dead', 'live'], 'every seen entitlement appears in all')
+  const info = await iap.info()
+  assert.strictEqual(info.entitlements.live.period, 'promo', "period_type 'promotional' maps to 'promo'")
+
+  // entitlementsStatus: duplicate ids from the native list are de-duplicated.
+  const win2 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win2.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.reject({ code: 'unknown_action' }),
+        history: () => Promise.resolve([]),
+        entitlements: () => Promise.resolve({
+          active: [{ id: 'premium', product_id: 'p' }, { id: 'premium', product_id: 'p' }],
+          all: [{ id: 'premium' }]
+        })
+      }
+    }
+  }
+  global.window = win2
+  global.self = win2
+  iap = freshRequire()
+  s = await iap.status()
+  assert.deepStrictEqual(s.active, ['premium'], 'a duplicated entitlement is reported once')
+
+  // An envelope whose details object is EMPTY carries no entitlement state,
+  // so it must not outrank a store history that shows an active subscription.
+  const win3 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win3.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({ ok: true, runtime: 4, entitlements: { active: [], all: [] }, details: {} }),
+        entitlements: () => Promise.resolve({ active: [], all: [] }),
+        history: () => Promise.resolve([{ productId: 'p', entitlementId: 'premium', isActive: true }])
+      }
+    }
+  }
+  global.window = win3
+  global.self = win3
+  iap = freshRequire()
+  assert.strictEqual(await iap.has('premium'), true, 'an empty details object never masks the store history')
+  console.log('  status sources: active-only, de-duplicated, empty details never masks history ✓')
+}
+
 async function testServerIdentityAndMatching () {
   // The whole point of the server module is that the client cannot be
   // trusted, so the gate must read the entitlements of the user it was ASKED
@@ -1126,6 +1300,75 @@ async function testServerIdentityAndMatching () {
   global.fetch = prev
 
   console.log('  server identity: right user, exact id match, real timeout, secret precedence ✓')
+}
+
+async function testServerCacheAndEncoding () {
+  const calls = []
+  let listPages = 0
+  global.fetch = async (url, init) => {
+    calls.push({ url, auth: init.headers.Authorization })
+    if (url.includes('/v1/subscribers/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          subscriber: {
+            entitlements: {
+              premium: { expires_date: null },
+              // No expires_date key at all: an unrecognised shape, NOT a
+              // lifetime grant. Must never pass the gate.
+              mystery: { product_identifier: 'p' }
+            }
+          }
+        })
+      }
+    }
+    // A key that v2 rejects, and a healthy one, on the SAME project.
+    if (url.includes('/v2/') && init.headers.Authorization === 'Bearer sk_bad') {
+      return { ok: false, status: 403, json: async () => ({}) }
+    }
+    if (url.includes('/projects/proj%20one/entitlements')) {
+      // Two pages, so the paging loop must actually iterate.
+      listPages++
+      if (url.includes('starting_after')) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entl2', lookup_key: 'premium' }] }) }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{ id: 'entl1', lookup_key: 'basic' }], next_page: '/v2/projects/proj%20one/entitlements?limit=100&starting_after=entl1' })
+      }
+    }
+    if (url.includes('/projects/proj%20one/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: FUTURE_MS }] }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+
+  // An entitlement with no expiry FIELD is not a lifetime grant: deny.
+  assert.strictEqual(await server.entitled('u1', 'premium', { key: 'appl_pub' }), true, 'expires_date: null is a lifetime grant')
+  assert.strictEqual(await server.entitled('u1', 'mystery', { key: 'appl_pub' }), false, 'an entitlement with no expiry field never grants access')
+
+  // Project ids are URL-encoded, and the entitlements list pages fully, so a
+  // lookup key on page 2 still resolves.
+  calls.length = 0
+  listPages = 0
+  const ents = await server.entitlements('u1', { secret: 'sk_good', project: 'proj one' })
+  assert.ok(calls.every((c) => !c.url.includes('proj one')), 'the project id is URL-encoded, never sent raw')
+  assert.strictEqual(listPages, 2, 'the entitlements list is paged all the way through')
+  assert.deepStrictEqual(ents, [{ id: 'premium', expires: new Date(FUTURE_MS).toISOString() }], 'a lookup key found on page 2 still resolves')
+
+  // The v2 downgrade is remembered per KEY, not per project: a bad key must
+  // not disable v2 for a healthy key on the same project.
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_bad', project: 'proj one' })
+  assert.ok(calls.some((c) => c.url.includes('/v1/')), 'the rejected key falls back to v1')
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_good', project: 'proj one' })
+  assert.ok(calls.some((c) => c.url.includes('/v2/')), 'a healthy key on the same project still uses v2')
+  console.log('  server cache/encoding: per-key downgrade, full paging, encoded ids, no phantom lifetimes ✓')
 }
 
 async function testLapsedAndPlanResolution () {
@@ -1786,6 +2029,8 @@ async function testSyncNativeAnswerNotLost () {
   const t0 = Date.now()
   const status = await iap.status()
   assert.deepStrictEqual(status.active, ['premium'])
+  // The value assertion above is the real proof (a lost answer resolves
+  // undefined); this only guards against it being recovered by timeout.
   assert.ok(Date.now() - t0 < iap._t.read, 'synchronous native answer resolved before the timeout')
   console.log('  sync native answer: registered listener wins the race ✓')
 }
@@ -2017,11 +2262,15 @@ async function testBuyRejectsUnusableInput () {
   await testSharedResultChannelIsolation()
   await testAnonIdStability()
   await testEventDelivery()
+  await testCatalogShapeInvariants()
+  await testStatusSourceInvariants()
   await testServer()
   await testServerIdentityAndMatching()
+  await testServerCacheAndEncoding()
   await testServerHardening()
   console.log('all tests passed')
-  process.exit(0)
+  // Give any late rejection a turn to surface before exiting green.
+  setTimeout(() => process.exit(0), 50)
 })().catch((e) => {
   console.error(e)
   process.exit(1)

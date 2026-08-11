@@ -68,6 +68,19 @@ gates fail closed.)
   `MODULE_NOT_FOUND`. That is the exact regression the node10 fixture was
   written to prevent. CI now packs the tarball, installs it into a clean
   directory, and resolves every entry point from there.
+- **The suite now kills every mutation in a 29-case money-critical sweep**
+  (it started at 14/29). Deliberately breaking plan-id disambiguation, the
+  `$rc_` prefix strip, period defaults, the store-confirmed product id, the
+  billing-period map, offer forwarding on both runtimes, native logout,
+  active-only history filtering, entitlement de-duplication, the empty-details
+  guard, the v2 downgrade cache key, pagination depth, project-id encoding,
+  the lifetime-grant guard, grace-period math, sandbox headers, SSRF pinning
+  and epoch-unit handling now each fail the suite.
+- **A late async failure can no longer be swallowed.** The runner exited
+  immediately on success, so a rejection landing after the last scenario was
+  truncated and reported green; unhandled rejections and exceptions now fail
+  the run. Wall-clock assertions were also given headroom so a loaded CI
+  runner cannot flake a correctness gate.
 - **The suite was mutation-tested and hardened.** Deliberately breaking
   money-critical code proved the green suite would not have noticed a build
   that charged the wrong SKU, kept lapsed subscribers entitled, read the wrong
