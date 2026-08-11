@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual escape hatch: without this the workflow can only be started by an
+  # event, so a missed trigger leaves a PR with no run at all and no way to
+  # ask for one.
+  workflow_dispatch::
 
 permissions:
   contents: read

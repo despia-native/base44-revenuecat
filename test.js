@@ -1605,6 +1605,61 @@ async function testEventDelivery () {
   console.log("  events: purchase/center/result delivered, off(event) removes all ✓")
 }
 
+async function testV2DenialIsConfirmed () {
+  // The seam: v2's rules for grace periods and other still-granting states
+  // are undocumented, and it has been seen returning nothing for a customer
+  // v1 reports as entitled. A denial from v2 must therefore be confirmed
+  // against v1 before a paying customer loses access.
+  const calls = []
+  const iso = (ms) => new Date(ms).toISOString()
+  global.fetch = async (url, init) => {
+    calls.push({ url })
+    if (url.includes('/v1/subscribers/grace_user')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ subscriber: { entitlements: { premium: { expires_date: iso(Date.now() - 86400000), grace_period_expires_date: iso(Date.now() + 86400000) } } } })
+      }
+    }
+    if (url.includes('/v1/subscribers/')) {
+      return { ok: true, status: 200, json: async () => ({ subscriber: { entitlements: {} } }) }
+    }
+    if (url.includes('/projects/p1/customers/rich/active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'e1', expires_at: FUTURE_MS }] }) }
+    }
+    if (url.includes('/projects/p1/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [] }) }   // v2 says nothing
+    }
+    if (url.includes('/projects/p1/entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'e1', lookup_key: 'premium' }] }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+  const v2 = { secret: 'sk_x', project: 'p1' }
+
+  // A grace-period customer v2 omits is still entitled, because v1 is asked
+  // before the denial stands. This is the whole point.
+  assert.strictEqual(await server.entitled('grace_user', 'premium', v2), true, 'a v2 denial is confirmed against v1 before a paying customer loses access')
+
+  // A genuinely non-subscribed user is still denied — the confirmation must
+  // not turn into a free pass.
+  assert.strictEqual(await server.entitled('freeloader', 'premium', v2), false, 'confirming a denial never grants access to a non-subscriber')
+
+  // When v2 DOES report entitlements, it is taken at its word: no second
+  // request, so the fast path stays fast.
+  calls.length = 0
+  assert.strictEqual(await server.entitled('rich', 'premium', v2), true)
+  assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'a positive v2 answer costs no extra request')
+
+  // Opt-out for callers who would rather not spend the extra request.
+  calls.length = 0
+  assert.strictEqual(await server.entitled('grace_user', 'premium', { secret: 'sk_x', project: 'p1', confirmDenials: false }), false, 'confirmDenials:false takes v2 at its word')
+  assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'and spends no v1 request')
+  console.log('  v2 denials are confirmed against v1, so the two paths never disagree against a customer ✓')
+}
+
 async function testServerHardening () {
   const calls = []
   const iso = (ms) => new Date(ms).toISOString()
@@ -2284,6 +2339,7 @@ async function testBuyRejectsUnusableInput () {
   await testServer()
   await testServerIdentityAndMatching()
   await testServerCacheAndEncoding()
+  await testV2DenialIsConfirmed()
   await testServerHardening()
   console.log('all tests passed')
   // Give any late rejection a turn to surface before exiting green.

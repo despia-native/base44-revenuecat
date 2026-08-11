@@ -60,6 +60,18 @@ gates fail closed.)
 
 ### Fixed (RevenueCat REST API contract)
 
+- **The two API paths could disagree against a paying customer, and now
+  cannot.** v2's rules for grace periods and other still-granting states are
+  undocumented, and its `active_entitlements` has been observed returning
+  nothing for a customer v1 reports as entitled. Rather than leave that as a
+  known seam, a "nothing active" answer from v2 is now confirmed against v1
+  before it is reported. Granting wrongly costs a little revenue; denying a
+  paying customer costs the customer. The extra request is spent **only** when
+  v2 reports nothing for a customer it knows — a positive answer and an
+  unknown customer both cost nothing extra, and an unknown customer is not
+  looked up in v1 at all, so no phantom customer records are created.
+  `{ confirmDenials: false }` opts out.
+
 - **`{ sandbox: true }` silently did nothing on the secret-key path.**
   `X-Is-Sandbox` is a **v1** header; the v2 API has no documented sandbox
   support, and its `active_entitlements` has been reported empty for a

@@ -212,7 +212,11 @@ async function v2Entitlements (user, c) {
     // good, so the customer is simply unseen; it 404ing too throws, and the
     // caller falls back to v1 and remembers the broken project.
     await v2LookupKeys(c.project, c)
-    return []
+    // null, not []: RevenueCat has never seen this id in this project, which
+    // is an unambiguous "no purchases". The caller can skip confirming it,
+    // sparing a request and (since v1 reads create customers) sparing a
+    // phantom customer record for every id that was never a customer.
+    return null
   }
   if (!first.ok) throw httpError('v2', first)
   const data = await first.json()
@@ -308,6 +312,16 @@ async function entitlements (user, opts) {
   const c = creds(opts)
   const broken = c.secret + '|' + c.project
   const downgraded = v2Broken[broken] && v2Broken[broken] > Date.now() - V2_BROKEN_TTL_MS
+  // v2 answering "no entitlements" is the one verdict we do not take on
+  // faith. Its rules for grace periods and other still-granting states are
+  // undocumented, and it has been observed returning nothing for a customer
+  // v1 reports as entitled. Granting wrongly costs a little revenue; denying
+  // a paying customer costs the customer, so before reporting nothing we
+  // confirm against v1, whose rules this package implements explicitly.
+  // Costs one extra request ONLY on the about-to-deny path; set
+  // { confirmDenials: false } to skip it if your traffic is mostly
+  // never-subscribed users and you would rather not spend it.
+  const confirm = opts && opts.confirmDenials === false ? false : true
   // Sandbox verification rides v1, always. X-Is-Sandbox is a v1 header, and
   // v2 has no documented way to include sandbox purchases — its
   // active_entitlements has been observed empty for a customer v1 reports as
@@ -316,7 +330,12 @@ async function entitlements (user, opts) {
   // you ask for sandbox you get the path where sandbox is defined.
   if (c.project && !downgraded && !c.sandbox) {
     try {
-      return await v2Entitlements(user, c)
+      const active = await v2Entitlements(user, c)
+      if (active === null) return []          // unknown customer: nothing to confirm
+      if (active.length || !confirm) return active
+      // v2 knows this customer but lists nothing active. That is the
+      // ambiguous case — ask v1 before denying.
+      return await v1Entitlements(user, c)
     } catch (e) {
       // Only a key/project mismatch means "v2 is not for this setup": fall
       // back to v1, which answers for every key, and remember the verdict.
