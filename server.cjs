@@ -11,6 +11,12 @@
 //
 // Auth, two options, lowest friction first:
 //   • ZERO-SECRET: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+//     EITHER platform's key works and you only need ONE: this checks your
+//     RevenueCat PROJECT, not a store, and entitlements are per-customer and
+//     store-agnostic, so an appl_ key verifies Google Play subscribers and a
+//     goog_ key verifies App Store subscribers. Nothing here branches on
+//     platform. (Inside the app it is the opposite: the key must match the
+//     platform it runs on. See "Which key goes where" in the README.)
 //     RevenueCat's v1 subscriber endpoint accepts public keys, so the only
 //     config is a value that already ships inside your app binary. Note that
 //     GET /v1/subscribers is not a pure read: RevenueCat CREATES the customer
@@ -89,7 +95,7 @@ function creds (opts) {
     env('REVENUECAT_SECRET_KEY') || env('REVENUECAT_PUBLIC_KEY')
   const project = opts.project || env('RC_PROJECT') || env('REVENUECAT_PROJECT_ID') || null
   if (!auth) {
-    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
+    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys). Either platform key works and one is enough: this check is project-scoped, not platform-scoped, so an appl_ key also verifies Google Play subscribers and vice versa.')
   }
   // Number() so a numeric string from config/env ('5000') works instead of
   // throwing inside AbortSignal.timeout.
@@ -153,6 +159,63 @@ const lookupInflight = {}
 // amplification. Back off and answer from what we have.
 const LOOKUP_MISS_BACKOFF_MS = 60000
 const lookupMiss = {}
+
+// Opt-in cache for the entitlement answer itself, off by default.
+//
+// Everything else cached here is a lookup table; the answer was never cached,
+// so an app that gates every request spends one RevenueCat call per request
+// and scales linearly into 429s — and a 429 throws, which fail-closed turns
+// into a 503 for a paying customer. That is the most likely way a quiet
+// deployment stops being quiet.
+//
+// POSITIVE ANSWERS ONLY, and this asymmetry is the whole design. Caching a
+// grant briefly costs at most a few seconds of access after a cancellation.
+// Caching a denial makes a customer who just paid keep hitting a locked door
+// until the TTL expires — the exact failure this package spends the v1
+// confirmation request to avoid. So a denial is never stored, and a cached
+// grant is dropped the moment it expires rather than being served stale.
+//
+// Keyed by credential + user, so two projects (or a key rotation) never share
+// an entry. Opt in per call with { cacheMs: 30000 }.
+const answerCache = new Map()
+const ANSWER_CACHE_MAX = 5000
+// In-flight reads, so N concurrent gate checks on a cold cache make ONE
+// request rather than N.
+const answerInflight = {}
+
+function answerKey (user, c) {
+  return c.secret + '|' + (c.project || '') + '|' + (c.sandbox ? 's' : 'p') + '|' + user
+}
+
+function cachedAnswer (key) {
+  const hit = answerCache.get(key)
+  if (!hit) return null
+  // The expiry is the one the WRITER intended, not whatever ttl this caller
+  // happens to pass. Two call sites sharing a user and credential — a webhook
+  // handler on 5s and a page gate on an hour — would otherwise let the gate
+  // serve the webhook's short-lived entry for the full hour.
+  if (hit.expires <= Date.now()) { answerCache.delete(key); return null }
+  // A COPY. Returning the stored array by reference lets an ordinary caller
+  // transform (sort, shift, filter in place) rewrite the cache, and a shrunk
+  // list turns later checks into denials for a paying subscriber with no
+  // network read to correct it.
+  return hit.active.slice()
+}
+
+function rememberAnswer (key, active, ttl) {
+  // Delete first: re-setting an existing Map key keeps its ORIGINAL insertion
+  // position, so without this a refreshed hot key stays first in line for
+  // eviction while the evict-before-set below silently shrinks the cache by
+  // one on every refresh.
+  answerCache.delete(key)
+  // Bounded so a long-lived process checking many distinct ids cannot grow
+  // this without limit. Oldest-first eviction: Map preserves insertion order.
+  if (answerCache.size >= ANSWER_CACHE_MAX) {
+    const oldest = answerCache.keys().next()
+    if (!oldest.done) answerCache.delete(oldest.value)
+  }
+  answerCache.set(key, { expires: Date.now() + ttl, active: active.slice() })
+}
 
 // Resolve a `next_page` value against the API host. Every request carries the
 // API key, so a page pointer must never be able to send it somewhere else: a
@@ -310,6 +373,38 @@ async function v1Entitlements (user, c) {
 async function entitlements (user, opts) {
   if (!user) return []
   const c = creds(opts)
+  // Opt-in, positive-only. A miss (or any denial) falls through to a real
+  // read, so a customer who just subscribed is never held behind a TTL.
+  const cacheMs = opts && Number(opts.cacheMs) > 0 ? Number(opts.cacheMs) : 0
+  const ckey = cacheMs ? answerKey(user, c) : null
+  if (ckey) {
+    const hit = cachedAnswer(ckey)
+    if (hit) return hit
+    // Join an identical check already in flight instead of issuing a second
+    // request. Without this the cache does nothing for the case it was added
+    // for: a cold isolate under load stampedes and 429s, which is exactly
+    // what the lookup map already guards against 200 lines above.
+    const pending = answerInflight[ckey]
+    if (pending) return (await pending).slice()
+  }
+  let active
+  if (ckey) {
+    const run = resolveEntitlements(user, c, opts)
+    answerInflight[ckey] = run
+    try {
+      active = await run
+    } finally {
+      delete answerInflight[ckey]
+    }
+  } else {
+    active = await resolveEntitlements(user, c, opts)
+  }
+  // Only grants are stored. See the note above answerCache.
+  if (ckey && active.length) rememberAnswer(ckey, active, cacheMs)
+  return active
+}
+
+async function resolveEntitlements (user, c, opts) {
   const broken = c.secret + '|' + c.project
   const downgraded = v2Broken[broken] && v2Broken[broken] > Date.now() - V2_BROKEN_TTL_MS
   // v2 answering "no entitlements" is the one verdict we do not take on
@@ -351,6 +446,11 @@ async function entitlements (user, opts) {
   return v1Entitlements(user, c)
 }
 
+// Active entitlements for a user, as an ARRAY of { id, expires } — not a keyed
+// object. Object.keys() on the result gives positions ('0','1'), not ids, and
+// it fails quietly because those are valid strings. Use entitled() when you
+// only need a gate; reach for this when you need expiry dates or the list.
+//
 // The one-line server gate: does this user have an active entitlement?
 //   if (!await entitled(user.id, 'premium', { secret })) return deny()
 // Throws on configuration/network/API errors: catch and deny (fail closed).

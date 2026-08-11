@@ -234,8 +234,14 @@ Client checks gate UI; server checks gate value. Three rungs, lowest friction fi
    ```js
    import { entitled } from 'npm:base44-revenuecat/server'
    const user = await base44.auth.me()                      // server-verified identity
-   const ok = await entitled(user.id, 'premium', { key: 'appl_XXXX' })  // public SDK key
+   const ok = await entitled(user.id, 'premium', { key: 'appl_XXXX' })  // or 'goog_XXXX'
    ```
+
+   Either platform's public key works and one is enough: the check is scoped to the
+   RevenueCat *project*, not to a store, and entitlements are per-customer and
+   store-agnostic, so an `appl_` key verifies Google Play subscribers and a `goog_` key
+   verifies App Store subscribers. No server code branches on platform. (Inside the app the
+   rule inverts — a build can only start with its own platform's key.)
 
    The key must be *configured server-side* (pasted constant or env `RC_KEY`), never read
    from the request, accepting a client-sent key would let an attacker point the check at a

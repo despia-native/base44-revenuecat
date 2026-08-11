@@ -325,6 +325,24 @@ declare namespace revenuecat {
     user(): Promise<Identity>
     /** Alias of user(id). */
     login(id: string): Promise<Identity>
+    /**
+     * Who does RevenueCat think this device is, right now?
+     *
+     * Same answer as `user()` with no arguments, named for the question, plus
+     * a `source` telling you where it came from — so "we could not ask" is
+     * never mistaken for "the user is anonymous".
+     *
+     * Reads the NATIVE SDK's opinion rather than this package's local state,
+     * which is the distinction that matters after an identity migration: the
+     * RevenueCat SDK persists its identity across app restarts, so a device
+     * can already be logged in as someone before your JavaScript says a word.
+     *
+     * @example
+     * const me = await revenuecat.whoami()
+     * if (me.anonymous) await revenuecat.user(base44User.id)  // migrate, merging history
+     * const after = await revenuecat.whoami()                 // confirm the merge landed
+     */
+    whoami(): Promise<Identity & { source: 'native' | 'local' | 'web' }>
     /** Clear identity (also rotates to a fresh anonymous RevenueCat user on newer builds, fire-and-forget). */
     logout(): Promise<{ id: null, user: null, anonymous: true, registered: false }>
 

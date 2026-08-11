@@ -486,17 +486,116 @@
     }
   }
 
-  // Does a customer envelope actually carry entitlement state (as opposed to
-  // a bare ack, e.g. `{}` from a build that answers the action without
-  // implementing it)?
-  function reportsEntitlements (envelope) {
-    if (!envelope) return false
-    // Current builds set `details` unconditionally, and an empty object is
-    // truthy — so check for actual content, or a zero-entitlement envelope
-    // would outrank the device's store history exactly as before the fix.
-    if (envelope.details && Object.keys(envelope.details).length) return true
+  // ── the entitlement resolution ladder ───────────────────────────────────
+  //
+  // THE INVARIANT. Every read of entitlement truth, on every runtime, goes
+  // through resolveEntitlement() below. Sources are listed in precedence
+  // order and each one answers with exactly one of POSITIVE, NEGATIVE, EMPTY
+  // or ERROR:
+  //
+  //   1. EMPTY is not NEGATIVE. A source that answered without carrying any
+  //      entitlement state (a bare `{}` ack from a build that implements the
+  //      action but not the payload) never terminates resolution.
+  //   2. ERROR is not NEGATIVE. On the client, an errored source is skipped
+  //      and resolution continues down the ladder. (The /server helpers
+  //      throw instead, so backend gates fail closed — see server.cjs.)
+  //   3. A NEGATIVE from a higher-precedence source does not override a
+  //      POSITIVE from a lower one. Confirming before denying is the rule at
+  //      every rung, not a special case of any one API version.
+  //   4. Only a NEGATIVE that no lower source contradicts denies.
+  //   5. Metadata from a source that did not decide still rides along on the
+  //      answer (subscriptions, the manage deep link, the identity it named).
+  //
+  // Rules 1 and 3 are the ones that matter: "a paying subscriber reads as not
+  // entitled" is what happens when an empty-but-authoritative-looking answer
+  // is allowed to outrank a truer answer from a lower-precedence source, and
+  // it is the same defect wherever it appears in the ladder. Adding a source
+  // means adding a rung to the array — never adding a branch.
+  var POSITIVE = 'positive'   // reports at least one ACTIVE entitlement
+  var NEGATIVE = 'negative'   // reports entitlement state, and none is active
+  var EMPTY = 'empty'         // answered, but carries no entitlement state
+  var ERROR = 'error'         // did not answer (threw, timed out, absent)
+
+  // How a customer envelope classifies. `details` with content and any
+  // active/all rows both count as "this build reported real state"; an empty
+  // object is a bare ack and must not outrank anything.
+  function classifyEnvelope (envelope) {
+    if (!envelope) return ERROR
     var ents = envelope.entitlements
-    return !!(ents && ((ents.active || []).length || (ents.all || []).length))
+    if (ents && (ents.active || []).length) return POSITIVE
+    var details = envelope.details
+    if (details && Object.keys(details).length) {
+      // A details map is real state. It is POSITIVE only if some entitlement
+      // in it is actually active — otherwise this build is telling us the
+      // customer has none, which is NEGATIVE, not EMPTY.
+      for (var k in details) {
+        if (details[k] && details[k].active) return POSITIVE
+      }
+      return NEGATIVE
+    }
+    if (ents && (ents.all || []).length) return NEGATIVE
+    return EMPTY
+  }
+
+  function classifyEntitlements (ents) {
+    if (!ents) return ERROR
+    if ((ents.active || []).length) return POSITIVE
+    if ((ents.all || []).length) return NEGATIVE
+    return EMPTY
+  }
+
+  // An already-reduced status object (restore() returns one). Same three-way
+  // rule as every other source, in one place.
+  function classifyStatus (s) {
+    if (!s) return ERROR
+    if (s.active && s.active.length) return POSITIVE
+    return s.all && s.all.length ? NEGATIVE : EMPTY
+  }
+
+  // Classified through historyStatus itself, so "which rows count as active"
+  // has exactly one definition rather than a second copy that can drift.
+  function classifyHistory (rows) {
+    if (!rows) return ERROR
+    if (!Array.isArray(rows) || !rows.length) return EMPTY
+    var s = historyStatus(rows)
+    if (s.active.length) return POSITIVE
+    return s.all.length ? NEGATIVE : EMPTY
+  }
+
+  // Retained as the "did this source report anything at all" predicate that
+  // callers outside the ladder (info(), the V3 path) still ask for.
+  function reportsEntitlements (envelope) {
+    var k = classifyEnvelope(envelope)
+    return k === POSITIVE || k === NEGATIVE
+  }
+
+  // The whole decision, in one place. `rungs` is in precedence order; each is
+  // { kind, status } where status is a thunk producing the status object.
+  //
+  // Any POSITIVE anywhere in the ladder makes the answer POSITIVE (rule 3),
+  // and the highest-precedence POSITIVE supplies the shape because it is the
+  // most authoritative source that agrees. Only when no rung is POSITIVE may
+  // a NEGATIVE decide (rule 4), and only then does EMPTY get to answer at
+  // all (rule 1). Metadata from the top envelope rides along regardless
+  // (rule 5).
+  function resolveEntitlement (rungs, fallback) {
+    var best = null
+    var i
+    for (i = 0; i < rungs.length; i++) {
+      if (rungs[i].kind === POSITIVE) { best = rungs[i]; break }
+    }
+    if (!best) {
+      for (i = 0; i < rungs.length; i++) {
+        if (rungs[i].kind === NEGATIVE) { best = rungs[i]; break }
+      }
+    }
+    if (!best) {
+      for (i = 0; i < rungs.length; i++) {
+        if (rungs[i].kind === EMPTY) { best = rungs[i]; break }
+      }
+    }
+    if (!best) return fallback()
+    return best.status()
   }
 
   // When the entitlement answer comes from history/the entitlements read but
@@ -520,10 +619,29 @@
   function customerStatus (envelope, rows) {
     var ents = envelope && envelope.entitlements || {}
     keepProject(envelope)
+    var active = ents.active || []
+    var all = ents.all || []
+    // classifyEnvelope() reads the `details` map, so this must read it too. A
+    // build that reports per-entitlement detail WITHOUT the entitlements
+    // summary is a real, granting answer; deriving active[] only from the
+    // summary would let that rung win the ladder and then report nothing —
+    // a paying subscriber denied by the very resolver meant to prevent it.
+    var details = envelope && envelope.details
+    if (details && !active.length) {
+      var derivedActive = []
+      var derivedAll = []
+      for (var k in details) {
+        if (!details[k]) continue
+        if (derivedAll.indexOf(k) === -1) derivedAll.push(k)
+        if (details[k].active && derivedActive.indexOf(k) === -1) derivedActive.push(k)
+      }
+      if (derivedActive.length) active = derivedActive
+      if (!all.length && derivedAll.length) all = derivedAll
+    }
     return {
       ok: envelope.ok !== false,
-      active: ents.active || [],
-      all: ents.all || [],
+      active: active,
+      all: all,
       subscriptions: envelope.subscriptions || [],
       purchases: Array.isArray(rows) ? rows : [],
       user: envelope.user || iap._user,
@@ -782,6 +900,43 @@
     // Alias of user(id).
     login: function (id) {
       return this.user(id)
+    },
+
+    // Who does RevenueCat think this device is, right now?
+    //
+    //   const me = await revenuecat.whoami()
+    //   // { id, user, anonymous, registered, source }
+    //
+    // Identical to user() with no arguments, named for the question it
+    // answers. Reads the NATIVE SDK's opinion rather than this package's local
+    // state, which is the distinction that matters after a migration: the
+    // RevenueCat SDK persists its identity across app restarts, so a device
+    // can already be logged in as someone before your JavaScript says a word.
+    //
+    //   anonymous: true   RevenueCat minted its own id ($RCAnonymousID:…).
+    //                     Purchases attach to the DEVICE, not an account.
+    //   registered: true  An id you supplied via user(id) is in force.
+    //
+    // `source` says where the answer came from, so "we could not ask" is
+    // never mistaken for "the user is anonymous":
+    //   'native' the SDK answered · 'local' this build has no identity read,
+    //   so the answer is this package's own state · 'web' not in an app.
+    //
+    // The migration case (anonymous → registered) is handled by user(newId),
+    // which calls the native login and merges the anonymous purchase history
+    // into the account. Call whoami() after it to confirm the merge landed
+    // rather than assuming it did.
+    whoami: function () {
+      var self = this
+      var rt = runtime()
+      if (rt === 0) {
+        return Promise.resolve({ id: null, user: null, anonymous: true, registered: false, source: 'web' })
+      }
+      var canRead = rt === 4 || (rt === 3 && self._bridge >= 2)
+      return self.user().then(function (who) {
+        who.source = canRead ? 'native' : 'local'
+        return who
+      })
     },
 
     // Clear the current identity. On newer builds this also rotates the
@@ -1063,6 +1218,93 @@
       var self = this
       var rt = runtime()
       if (rt === 0) return Promise.resolve(webResult('paywall'))
+      // An offering id that does not exist must not quietly become the default
+      // offering. plans('typo') already answers offeringNotFoundError; the
+      // native paywall falls back instead, so `paywall('black-friday')` with a
+      // misspelled id charges full price while the caller believes a promo is
+      // on screen. Same class as render/charge identity: what was asked for and
+      // what the user is charged from have to be the same offering.
+      //
+      // Verified-missing refuses. Unverifiable (the catalog read itself failed)
+      // still presents — a flaky read must not cost every sale — so this closes
+      // the typo case, which is the one that actually happens, without making
+      // the paywall depend on a second network call succeeding.
+      if (offering) {
+        return self._assertOffering(offering).then(function (missing) {
+          if (missing) return missing
+          return self._presentPaywall(offering)
+        })
+      }
+      return self._presentPaywall(offering)
+    },
+
+    // Resolves to a rejection result when the offering is known not to exist,
+    // or null when it exists / cannot be checked.
+    _assertOffering: function (offering) {
+      var self = this
+      // Every field Result declares. Omitting product/transaction/entitlements/
+      // user would type-check against index.d.ts and then throw at runtime the
+      // first time a caller read r.entitlements on a refused paywall.
+      function refusal () {
+        return {
+          ok: false, cancelled: false, restored: false, source: 'paywall',
+          product: null, transaction: null, entitlements: [], user: self._user,
+          platform: os(), runtime: runtime(),
+          error: 'No offering found for ' + offering + '.',
+          code: 'offeringNotFoundError'
+        }
+      }
+      // A cached catalog is evidence only if it actually lists offerings. A
+      // build whose catalog read degraded to the flat product list reports
+      // none, which proves nothing either way — fall through and let the
+      // authoritative read answer rather than guessing from it.
+      function lists (envelope) {
+        var l = envelope && envelope.offerings
+        if (!l || !l.length) return null                  // no evidence
+        for (var i = 0; i < l.length; i++) {
+          if (!l[i]) continue
+          if (String(l[i].id) === String(offering)) return true
+          // The legacy V3 offerings channel cannot name what it returned and
+          // labels its single offering `id: ''` even when the native side
+          // honored the filter. An unlabelled entry proves nothing about a
+          // named offering, so this is no evidence rather than absence —
+          // otherwise paywall() refuses EVERY named offering on classic
+          // builds and the sale is simply lost.
+          if (!l[i].id) return null
+        }
+        return false
+      }
+      var known = self._catalogs[offering] || self._catalogs['']
+      var cached = known && lists(known.envelope)
+      if (cached === true) return Promise.resolve(null)
+      if (cached === false) return Promise.resolve(refusal())
+      // Bounded. offers() can burn the catalog budget and then the offerings
+      // budget before answering, which on a silent channel is ~25s of nothing
+      // after the user tapped Upgrade. An unverified offering already presents
+      // by policy, so time out into presenting rather than into a stall.
+      var timer
+      var budget = new Promise(function (resolve) {
+        timer = setTimeout(function () { resolve(null) }, T.probe)
+        if (timer && timer.unref) timer.unref()
+      })
+      // No usable cache: ask. offers() already answers offeringNotFoundError
+      // for an id that matches nothing, including on builds whose catalog read
+      // cannot express offerings at all — so paywall() and plans() refuse the
+      // same inputs. A read that throws outright leaves us unable to tell, and
+      // there we present: a flaky catalog must not cost every sale.
+      var check = self.offers(offering).then(function (envelope) {
+        if (envelope && envelope.code === 'offeringNotFoundError') return refusal()
+        return lists(envelope) === false ? refusal() : null
+      }).catch(function () { return null })
+      return Promise.race([check, budget]).then(function (r) {
+        clearTimeout(timer)
+        return r
+      })
+    },
+
+    _presentPaywall: function (offering) {
+      var self = this
+      var rt = runtime()
       return chained('result', function () {
         return new Promise(function (resolve) {
           var done = false
@@ -1211,25 +1453,25 @@
           var envelope = parts[0]
           var rows = parts[1]
           var ents = parts[2]
-          // A customer envelope only outranks the other reads when it
-          // actually reports entitlement state. A build whose `customer`
-          // action acks with an empty object must fall through to the
-          // entitlements read / store history, or a live subscriber reads
-          // as not entitled — the same guard the entitlements read gets
-          // below.
-          if (envelope && reportsEntitlements(envelope)) return customerStatus(envelope, rows)
-          // Prefer the entitlements read only when it actually reports
-          // something. An empty answer is a real state (a project with no
-          // entitlements mapped), but it must not outrank the device's store
-          // history, or a live subscriber reads as not entitled.
-          if (ents && ((ents.active || []).length || (ents.all || []).length)) return withEnvelopeMeta(entitlementsStatus(ents, rows), envelope)
-          if (rows && rows.length) return withEnvelopeMeta(historyStatus(rows), envelope)
-          // Nothing reported anywhere: a real empty envelope is still the
-          // best answer (it carries user/anonymous/management metadata).
-          if (envelope) return customerStatus(envelope, rows)
-          if (rows) return historyStatus(rows)
-          if (ents) return entitlementsStatus(ents, rows)
-          return emptyStatus('timeout', 'No response from the native layer.')
+          // The ladder, in precedence order. No branch decides anything here:
+          // resolveEntitlement() applies the invariant, so a rung added later
+          // cannot reintroduce "empty outranks true".
+          return resolveEntitlement([
+            {
+              kind: classifyEnvelope(envelope),
+              status: function () { return customerStatus(envelope, rows) }
+            },
+            {
+              kind: classifyEntitlements(ents),
+              status: function () { return withEnvelopeMeta(entitlementsStatus(ents, rows), envelope) }
+            },
+            {
+              kind: classifyHistory(rows),
+              status: function () { return withEnvelopeMeta(historyStatus(rows), envelope) }
+            }
+          ], function () {
+            return emptyStatus('timeout', 'No response from the native layer.')
+          })
         })
       }
       return chained('customer', function () {
@@ -1239,12 +1481,27 @@
       }).then(function (envelope) {
         if (envelope) {
           return self.restore().then(function (r) {
-            // An envelope with no entitlement data (an old build acking the
-            // read with an empty object) must not outrank a store history
-            // that shows an active subscription; the envelope's metadata
-            // (subscriptions, manage link, identity) still rides along.
-            if (!reportsEntitlements(envelope) && r && r.active && r.active.length) return withEnvelopeMeta(r, envelope)
-            return customerStatus(envelope, r && r.purchases || [])
+            // Same ladder, same invariant — restore() has already reduced the
+            // store history to a status, so its rung classifies that.
+            var rows = r && r.purchases || []
+            return resolveEntitlement([
+              {
+                kind: classifyEnvelope(envelope),
+                status: function () { return customerStatus(envelope, rows) }
+              },
+              {
+                // classifyStatus, not an inline ternary: a fourth definition
+                // of "is this positive" is exactly the branch the invariant
+                // above forbids, and it would drift the moment what counts as
+                // active changes.
+                kind: classifyStatus(r),
+                status: function () { return withEnvelopeMeta(r, envelope) }
+              }
+            ], function () {
+              // Unreachable: rung 0 is inside `if (envelope)`, so it is never
+              // ERROR and resolveEntitlement always has a rung to answer with.
+              return customerStatus(envelope, rows)
+            })
           })
         }
         // Older V3 build without revenuecat://customer, the store history

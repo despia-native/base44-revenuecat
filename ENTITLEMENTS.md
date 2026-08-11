@@ -158,6 +158,25 @@ truth for *quantities*.
 An app can absolutely do both: a `premium` subscription entitlement plus a separate coin balance.
 They do not interact.
 
+### "But I was told to create a placeholder entitlement for consumables"
+
+You will find advice — including in some RevenueCat setup walkthroughs — that every product needs
+an entitlement, so consumables should get a placeholder one. That advice exists because parts of
+the RevenueCat dashboard are organized around entitlements, not because a consumable needs one to
+be purchasable. **It does not.** A consumable sells, charges, and returns a completed transaction
+with no entitlement attached, which is what the code above relies on.
+
+This guide's position, stated once so the rest of the docs can point at it:
+
+> **Do not attach a consumable to an entitlement.** If some other tool in your stack requires every
+> product to carry one, create the placeholder — but **never gate on it**. Use `result.ok` from the
+> purchase and your own balance, never `has()`.
+
+The reason is the one above: an entitlement with no expiration date is a lifetime grant, so the
+placeholder turns permanently true on the customer's first coin pack. Gating on it means the second
+pack is unnecessary and every non-paying user who ever buys once is "entitled" forever. Creating it
+is harmless; reading it is the bug.
+
 ## Use it in your app
 
 ### The gate
@@ -262,7 +281,9 @@ import { entitled } from 'npm:base44-revenuecat/server'
 
 // Your PUBLIC SDK key (appl_… / goog_…) from Despia → Integrations →
 // RevenueCat. Configure it here, server-side — never read it from the request.
-const RC_KEY = 'appl_XXXXXXXXXXXX'
+// Either platform's key works and one is enough: the check reads your project,
+// not a store, so an appl_ key also verifies Google Play subscribers.
+const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
 
 let ok = false
 try {
@@ -334,6 +355,9 @@ Sandbox purchases are free and appear in the dashboard within seconds.
 2. The entitlement exists but the purchased product is not attached to it.
 3. The id differs by case or whitespace. It is matched literally.
 4. You bought a consumable, which grants no entitlement by design. Check `result.ok` instead.
+5. The check never ran: the request had no signed-in session, so `base44.auth.me()` threw and the
+   function answered a generic 500 (`"Authentication required to view users"`) before reading any
+   entitlement. That is an authentication bug, not a purchase one — catch it and answer 401.
 5. You never called `revenuecat.user(id)`, so the purchase landed on a different customer.
 
 `revenuecat.status()` shows the ids the device actually sees, which separates these in one call.
@@ -348,7 +372,8 @@ instead and gate on both while old versions are still in the wild.
 a billing retry. See [the lifecycle table](#read-the-lifecycle-not-just-the-onoff).
 
 **Attaching consumables to an entitlement.** Grants permanent access on the first coin pack. Track
-balances in your own data.
+balances in your own data. If something in your stack forces you to create one anyway, never gate
+on it — see [the placeholder note](#but-i-was-told-to-create-a-placeholder-entitlement-for-consumables).
 
 **Mismatched user ids between app and server.** The most common cause of "client says yes, server
 says no." Log `revenuecat.id` in the app and `user.id` in the function and compare them as strings.

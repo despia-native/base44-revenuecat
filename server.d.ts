@@ -8,6 +8,11 @@
 export interface ServerOptions {
   /**
    * Zero-secret auth: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+   * Either platform's key works and ONE is enough: this check is scoped to
+   * your RevenueCat project, not to a store, so an appl_ key also verifies
+   * Google Play subscribers and a goog_ key also verifies App Store
+   * subscribers. (Inside the app the rule is the opposite - there a key must
+   * match the platform it runs on.)
    * RevenueCat's v1 subscriber endpoint accepts public keys. Note that the
    * v1 subscriber read is create-on-read: an id RevenueCat has never seen is
    * created as a customer (HTTP 200 or 201). Configure the key server-side
@@ -59,6 +64,22 @@ export interface ServerOptions {
    * rather take v2 at its word.
    */
   confirmDenials?: boolean
+
+  /**
+   * Cache a POSITIVE entitlement answer for this many milliseconds. Off by
+   * default (`0`), and opt-in per call, e.g. `{ cacheMs: 30000 }`.
+   *
+   * Without it, an app that gates every request spends one RevenueCat request
+   * per request and scales linearly into rate limiting — and a 429 throws,
+   * which fail-closed handling turns into a 503 for a paying customer.
+   *
+   * Only grants are cached, never denials. Caching a grant briefly costs at
+   * most a few seconds of access after a cancellation; caching a denial would
+   * leave a customer who just subscribed locked out until the TTL expired.
+   * Entries are keyed by credential, sandbox flag and user id, so two
+   * projects — or a key rotation — never share an answer.
+   */
+  cacheMs?: number
 }
 
 export interface ActiveEntitlement {
@@ -86,6 +107,24 @@ export function entitled(user: string, entitlement: string, opts?: ServerOptions
  * answer for a customer it knows is confirmed against v1 before being
  * reported, so the two paths cannot disagree against a paying customer (see
  * `confirmDenials`).
+ *
+ * Resolves an **ARRAY** of `{ id, expires }` — not a keyed object. Calling
+ * `Object.keys()` on it yields positions (`["0","1"]`), which fails quietly
+ * because array indices are valid strings: the response looks structurally
+ * fine while carrying positions where entitlement ids should be. If you only
+ * need a gate, use {@link entitled} and there is no shape to handle at all.
+ *
+ * Not to be confused with {@link customer}, whose `.entitlements` field is
+ * RevenueCat's raw keyed map. Different functions, different shapes.
+ *
+ * @example
+ * const active = await entitlements(user.id, { key: RC_KEY })
+ * // [{ id: 'premium', expires: '2026-08-11T16:30:46.000Z' },
+ * //  { id: 'lifetime', expires: null }]
+ *
+ * active.map((e) => e.id)                    // ['premium', 'lifetime']
+ * active.some((e) => e.id === 'premium')     // true
+ * Object.keys(active)                        // ['0', '1']  <- positions, not ids
  *
  * @throws Same conditions as {@link entitled}.
  */

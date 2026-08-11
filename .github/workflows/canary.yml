@@ -1,0 +1,73 @@
+# Live canary against a real RevenueCat project.
+#
+# Everything else in CI runs against simulated responses, which proves this
+# package does what we believe RevenueCat does. It cannot notice RevenueCat
+# changing. Two behaviours this package depends on are undocumented and
+# load-bearing:
+#
+#   - X-Is-Sandbox, the only way a sandbox purchase is visible to a server
+#     check. It is a v1 header with no v2 equivalent.
+#   - v2 active_entitlements and its treatment of grace periods and other
+#     still-granting states.
+#
+# If either changes, every simulated test still passes and the first signal is
+# a customer support ticket. This job turns that into a red build instead.
+#
+# It asserts four answers against fixed test customers, on both the public-key
+# and secret-key paths, plus one sandbox check. It does NOT make purchases: the
+# customers are set up once by hand in the RevenueCat dashboard.
+#
+# ── Setting it up (one time) ───────────────────────────────────────────────
+# In the RevenueCat project you want to watch:
+#   1. Create a customer with the id in RC_CANARY_ENTITLED_ID and grant it the
+#      entitlement in RC_CANARY_ENTITLEMENT (Customer → Grant entitlement, set
+#      it to expire far in the future). A promotional grant is fine and free.
+#   2. Create a customer with the id in RC_CANARY_DENIED_ID and grant it
+#      nothing.
+#   3. Optionally make a sandbox purchase for RC_CANARY_SANDBOX_ID. Leave the
+#      secret unset to skip the sandbox assertion rather than fail on it.
+# Then add these repository secrets:
+#   RC_CANARY_PUBLIC_KEY   appl_… or goog_… (either works, see the README)
+#   RC_CANARY_SECRET       sk_…
+#   RC_CANARY_PROJECT      proj…
+#   RC_CANARY_ENTITLEMENT  the entitlement id, e.g. premium
+#   RC_CANARY_ENTITLED_ID / RC_CANARY_DENIED_ID / RC_CANARY_SANDBOX_ID
+#
+# With no secrets configured the job reports "not configured" and succeeds, so
+# a fork or a fresh clone is never red for a setup it was never given.
+
+name: canary
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC. Frequent enough to catch a RevenueCat change
+    # within a working week, rare enough to be free.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify the server helpers against live RevenueCat
+        env:
+          RC_CANARY_PUBLIC_KEY: ${{ secrets.RC_CANARY_PUBLIC_KEY }}
+          RC_CANARY_SECRET: ${{ secrets.RC_CANARY_SECRET }}
+          RC_CANARY_PROJECT: ${{ secrets.RC_CANARY_PROJECT }}
+          RC_CANARY_ENTITLEMENT: ${{ secrets.RC_CANARY_ENTITLEMENT }}
+          RC_CANARY_ENTITLED_ID: ${{ secrets.RC_CANARY_ENTITLED_ID }}
+          RC_CANARY_DENIED_ID: ${{ secrets.RC_CANARY_DENIED_ID }}
+          RC_CANARY_SANDBOX_ID: ${{ secrets.RC_CANARY_SANDBOX_ID }}
+        run: node canary.js

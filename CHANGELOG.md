@@ -10,6 +10,148 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
+## [1.7.0] - 2026-08-11
+
+### Fixed
+
+- **CI was not running at all.** The `workflow_dispatch` trigger added in 1.6.1
+  was written `workflow_dispatch::`, which parses as an event named
+  `workflow_dispatch:`. GitHub rejects a workflow containing an unknown event
+  outright rather than ignoring the bad key, so *no* run was produced for any
+  trigger — push and pull_request included. This is why the 1.6.1 pull request
+  reported no checks; it was never an Actions incident.
+- **A misspelled offering no longer shows default pricing.** `paywall('winbak')`
+  resolved by presenting the **default** offering, because the native layer
+  falls back silently — so a full-price paywall appeared where a discount was
+  intended, and nothing reported that it had happened. The offering is now
+  checked against the catalog before presenting, answering
+  `offeringNotFoundError` exactly as `plans()` and `offers()` already did. The
+  check is served from an already-rendered catalog when there is one, so the
+  common path costs no extra request, and a catalog read that throws still
+  presents — an unverifiable offering must not cost every sale.
+
+### Changed
+
+- **One resolver decides entitlement truth, with the invariant written once.**
+  "A paying subscriber reads as not entitled" had appeared five times across
+  1.4.2–1.6.1, each at a different rung of the resolution ladder, because the
+  precedence rule lived as prose at four sites instead of as code at one. Every
+  source now classifies as POSITIVE / NEGATIVE / EMPTY / ERROR and every read
+  goes through one `resolveEntitlement()`: an EMPTY answer never terminates
+  resolution, an ERROR is skipped rather than read as a denial, and a NEGATIVE
+  from a higher-precedence source can no longer outrank a POSITIVE from a lower
+  one. That last rule generalizes 1.6.1's `confirmDenials` from the v2 path to
+  every rung. Adding a source is now adding a rung, not adding a branch.
+
+### Added
+
+- **`{ cacheMs }` on the server helpers**, opt-in and off by default. Without
+  it every gated request is one RevenueCat request, which scales linearly into
+  429s — and a 429 throws, which fail-closed handling turns into a 503 for a
+  paying customer. **Positive answers only:** caching a grant costs at most
+  `cacheMs` of access after a cancellation, while caching a denial would lock
+  out a customer who just subscribed. Keyed by credential, sandbox flag and
+  user id, and bounded so a long-lived process cannot grow it without limit.
+- **A weekly live canary** (`canary.js`, `.github/workflows/canary.yml`) that
+  checks the server helpers against a real RevenueCat project on both the
+  public-key and secret-key paths, plus sandbox. The rest of the suite
+  simulates RevenueCat and therefore cannot notice RevenueCat changing, while
+  `X-Is-Sandbox` and v2's `active_entitlements` are both undocumented and
+  load-bearing. Unconfigured repositories report "not configured" and pass.
+- **Publishing with provenance** (`.github/workflows/release.yml`), plus
+  automatic GitHub Releases whose notes come from this changelog. Refuses to
+  publish when the tag and `package.json` disagree, and re-runs every gate
+  against the tagged commit.
+
+### Tests
+
+- **The resolution matrix is generated, not enumerated:** every source crossed
+  with every answer, 64 combinations, asserting one property — *if any source
+  reports POSITIVE, the resolved answer is POSITIVE*. Each of the five
+  historical bugs is one cell of that table, and so is the next one. Adding a
+  sixth source adds its four answers automatically.
+- **Money-path invariants as properties**, not as the two cases that were once
+  bugs: over every plan in every offering, `buy()` charges the product whose
+  price was rendered; a plan rendered from one offering can never be purchased
+  out of another; a misspelled offering never widens scope.
+- Mutation sweep extended to 45 cases covering the resolver, the paywall check,
+  the server cache and `whoami()`. **45/45 killed, zero survivors.**
+- A full code review of this branch found 15 issues, including three that would
+  have shipped real regressions, all now fixed and covered:
+  - `classifyEnvelope()` classified POSITIVE from the per-entitlement `details`
+    map while `customerStatus()` built `active[]` only from the `entitlements`
+    summary — so a build reporting detail without the summary won the ladder
+    and then reported nothing. That is the exact "paying subscriber reads as
+    not entitled" defect this work exists to end, reintroduced by the fix for
+    it. The generated matrix missed it because its POSITIVE fixture always set
+    the summary; it now runs every combination once per POSITIVE *shape*, and
+    reverting the fix fails the matrix.
+  - The legacy V3 offerings channel labels its single offering `id: ''`, which
+    the new paywall check read as proof of absence — refusing **every** named
+    offering on classic builds. An unlabelled list is now "no evidence".
+  - The server cache returned its stored array by reference, so an ordinary
+    in-place transform by a caller rewrote the cache and turned later checks
+    into denials. It now hands out copies, the TTL belongs to the writer rather
+    than whichever caller reads next, concurrent cold-cache checks join one
+    in-flight request, and refreshing a hot key no longer shrinks the cache.
+
+### Added
+
+- **`whoami()`** — which RevenueCat customer is this device, right now? Reads
+  the native SDK's own identity rather than this package's local state, which
+  is the distinction that matters after a migration: the SDK persists identity
+  across app restarts, so a device can already be signed in before your
+  JavaScript says a word. Returns `{ id, user, anonymous, registered, source }`,
+  where `source` (`'native'` / `'local'` / `'web'`) keeps "we could not ask"
+  from being mistaken for "nobody is signed in". Native on both runtimes —
+  Despia V4 via the `whoami` action, V3 via `revenuecat://whoami` on bridge ≥ 2.
+  Documented alongside the identity-migration cases: anonymous → account
+  (history merges), account switch on a shared device (catalog dropped), and
+  logout rotating to a fresh anonymous customer.
+
+### Documentation
+
+- **The exact server return payloads are now documented.** `entitlements()`
+  was described in half a line ("active entitlements with expiry") and its
+  shape was never shown, so the only place the contract existed was the
+  TypeScript declaration — invisible to a Deno backend, a JavaScript consumer,
+  or an AI assistant reading the README. It resolves an **array** of
+  `{ id, expires }`, and reading it with `Object.keys()` yields positions
+  (`["0","1"]`) rather than ids. That failure is quiet: array indices are valid
+  strings, so the response looks structurally fine while carrying positions
+  where entitlement names should be. The README now shows the literal JSON for
+  all three exports, names the `Object.keys()` trap with a wrong/right block,
+  points out that `entitled()` avoids the shape entirely, and explains why
+  `customer().entitlements` (RevenueCat's raw keyed map) is a different shape
+  on purpose. The same warning is in the JSDoc for both declaration files, so
+  it reaches editor hover, and a test pins the payload so the docs cannot drift
+  from what the code returns.
+
+- **The server example no longer teaches a 500.** `base44.auth.me()` *throws*
+  when a request carries no signed-in session rather than returning `null`, and
+  the documented example called it outside the `try`, so anyone copying it got
+  an uncaught throw surfacing as `500 "Authentication required to view users"`
+  — which reads as a broken purchase and is not one. The example now catches it
+  and answers `401`, and the three denials are spelled out: **401** nobody is
+  signed in (send them to sign-in), **402** signed in but not subscribed (show
+  the paywall), **503** cannot verify right now (retry, and never show a
+  paywall — a paying subscriber must not be asked to buy again because
+  RevenueCat blipped). Troubleshooting entries in the README and the
+  entitlements guide are keyed to the literal error text.
+
+- **Which key goes where.** New README section covering the setup question that
+  trips people up most: RevenueCat hands you several keys, and the two places a
+  key can go follow *opposite* rules. In the app a key must match its platform
+  (an Android build cannot start with an `appl_…` key); on the server any one
+  key of either platform verifies every subscriber, because the check is scoped
+  to the project rather than to a store. Includes a prefix table
+  (`appl_`/`goog_`/`sk_`, and which are safe in client code), a single-platform
+  column for iOS-only and Android-only apps, and a troubleshooting entry for the
+  symptom this causes — one platform working while the other is entirely dead.
+- The same clarification now appears wherever a key is configured, so it is
+  found from any direction: the `ServerOptions.key` JSDoc, the `server.cjs`
+  header, the missing-key error message, SPEC.md and ENTITLEMENTS.md.
+
 ## [1.6.1] - 2026-08-11
 
 ### Fixed
