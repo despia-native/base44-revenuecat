@@ -111,6 +111,22 @@ gates fail closed.)
 
 ### Documentation
 
+- **The exact server return payloads are now documented.** `entitlements()`
+  was described in half a line ("active entitlements with expiry") and its
+  shape was never shown, so the only place the contract existed was the
+  TypeScript declaration — invisible to a Deno backend, a JavaScript consumer,
+  or an AI assistant reading the README. It resolves an **array** of
+  `{ id, expires }`, and reading it with `Object.keys()` yields positions
+  (`["0","1"]`) rather than ids. That failure is quiet: array indices are valid
+  strings, so the response looks structurally fine while carrying positions
+  where entitlement names should be. The README now shows the literal JSON for
+  all three exports, names the `Object.keys()` trap with a wrong/right block,
+  points out that `entitled()` avoids the shape entirely, and explains why
+  `customer().entitlements` (RevenueCat's raw keyed map) is a different shape
+  on purpose. The same warning is in the JSDoc for both declaration files, so
+  it reaches editor hover, and a test pins the payload so the docs cannot drift
+  from what the code returns.
+
 - **The server example no longer teaches a 500.** `base44.auth.me()` *throws*
   when a request carries no signed-in session rather than returning `null`, and
   the documented example called it outside the `try`, so anyone copying it got

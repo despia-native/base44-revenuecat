@@ -446,6 +446,11 @@ async function resolveEntitlements (user, c, opts) {
   return v1Entitlements(user, c)
 }
 
+// Active entitlements for a user, as an ARRAY of { id, expires } — not a keyed
+// object. Object.keys() on the result gives positions ('0','1'), not ids, and
+// it fails quietly because those are valid strings. Use entitled() when you
+// only need a gate; reach for this when you need expiry dates or the list.
+//
 // The one-line server gate: does this user have an active entitlement?
 //   if (!await entitled(user.id, 'premium', { secret })) return deny()
 // Throws on configuration/network/API errors: catch and deny (fail closed).

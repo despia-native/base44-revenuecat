@@ -108,6 +108,24 @@ export function entitled(user: string, entitlement: string, opts?: ServerOptions
  * reported, so the two paths cannot disagree against a paying customer (see
  * `confirmDenials`).
  *
+ * Resolves an **ARRAY** of `{ id, expires }` — not a keyed object. Calling
+ * `Object.keys()` on it yields positions (`["0","1"]`), which fails quietly
+ * because array indices are valid strings: the response looks structurally
+ * fine while carrying positions where entitlement ids should be. If you only
+ * need a gate, use {@link entitled} and there is no shape to handle at all.
+ *
+ * Not to be confused with {@link customer}, whose `.entitlements` field is
+ * RevenueCat's raw keyed map. Different functions, different shapes.
+ *
+ * @example
+ * const active = await entitlements(user.id, { key: RC_KEY })
+ * // [{ id: 'premium', expires: '2026-08-11T16:30:46.000Z' },
+ * //  { id: 'lifetime', expires: null }]
+ *
+ * active.map((e) => e.id)                    // ['premium', 'lifetime']
+ * active.some((e) => e.id === 'premium')     // true
+ * Object.keys(active)                        // ['0', '1']  <- positions, not ids
+ *
  * @throws Same conditions as {@link entitled}.
  */
 export function entitlements(user: string, opts?: ServerOptions): Promise<ActiveEntitlement[]>

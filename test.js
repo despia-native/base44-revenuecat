@@ -2266,6 +2266,29 @@ async function testServerAnswerCache () {
   assert.deepStrictEqual(bursts, [true, true, true, true, true], 'every concurrent caller gets the right answer')
   assert.strictEqual(reads, 1, '5 concurrent cold-cache checks cost ONE RevenueCat request')
 
+  // THE DOCUMENTED PAYLOAD. The README, the JSDoc and the .d.ts all promise
+  // an ARRAY of { id, expires }. If that ever became a keyed object, every
+  // consumer doing .map(e => e.id) breaks — and consumers doing Object.keys()
+  // would start "working", which is worse. Pin the contract.
+  PEOPLE.shaped = {
+    premium: { expires_date: FUTURE, product_identifier: 'p' },
+    lifetime: { expires_date: null, product_identifier: 'q' }
+  }
+  const shaped = await entitlements('shaped', { key: 'appl_shape' })
+  assert.ok(Array.isArray(shaped), 'entitlements() resolves an ARRAY, as documented')
+  assert.deepStrictEqual(shaped.map((e) => e.id).sort(), ['lifetime', 'premium'], 'rows carry id')
+  assert.strictEqual(typeof shaped.find((e) => e.id === 'premium').expires, 'string', 'expiry is an ISO string')
+  assert.strictEqual(shaped.find((e) => e.id === 'lifetime').expires, null, 'a lifetime grant expires null')
+  for (const row of shaped) {
+    assert.deepStrictEqual(
+      Object.keys(row).sort(), ['expires', 'id'],
+      'each row is exactly { id, expires } — extra fields would be an undocumented contract'
+    )
+  }
+  // And the failure this pins: positions, not ids. Documented as the trap.
+  assert.deepStrictEqual(Object.keys(shaped), ['0', '1'], 'Object.keys gives positions — which is why the docs call it out')
+
+  console.log('  server payload: entitlements() is an array of { id, expires }, as documented ✓')
   console.log('  server cache: copies out, writer-owned TTL, in-flight joins, grants only ✓')
 }
 

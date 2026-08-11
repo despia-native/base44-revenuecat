@@ -628,7 +628,59 @@ try {
   return Response.json({ error: 'verification unavailable' }, { status: 503 })
 }
 ```
-- The `/server` entry also exports `entitlements(user)` (active entitlements with expiry) and `customer(user)` (the raw RevenueCat subscriber) and works in any Node (18+) or Deno backend.
+### Server return payloads (copy these exactly)
+
+The `/server` entry exports three functions and works in any Node 18+ or Deno
+backend. Here is precisely what each one resolves to, because guessing the shape
+is the single easiest way to ship a bug that returns a *plausible* wrong answer
+instead of an error:
+
+```javascript
+// 1. entitled(user, entitlement, opts?) → boolean
+await entitled('user_123', 'premium', { key: RC_KEY })
+// true
+
+// 2. entitlements(user, opts?) → AN ARRAY of objects (not a map, not an object)
+await entitlements('user_123', { key: RC_KEY })
+// [
+//   { id: 'premium', expires: '2026-08-11T16:30:46.000Z' },   // ISO string
+//   { id: 'lifetime', expires: null }                          // null = never expires
+// ]
+
+// 3. customer(user, opts?) → the raw RevenueCat v1 subscriber object, or null
+await customer('user_123', { key: RC_KEY })
+// { entitlements: {...}, subscriptions: {...}, first_seen: '...', ... }
+```
+
+> **`entitlements()` returns an ARRAY, so `Object.keys()` gives you `["0","1"]`.**
+> This is the mistake worth naming, because it fails *quietly*: array indices are
+> valid strings, so the response looks structurally fine and ships a list of
+> positions where entitlement ids should be. If you ever see `"0"`, `"1"` in an
+> entitlement list, this is why — nothing is wrong with your RevenueCat setup.
+>
+> ```javascript
+> const active = await entitlements(user.id, { key: RC_KEY })
+>
+> Object.keys(active)                       // ✗ ['0', '1']        positions
+> active.map((e) => e.id)                   // ✓ ['premium', 'lifetime']
+> active.some((e) => e.id === 'premium')    // ✓ true
+> active.find((e) => e.id === 'premium')    // ✓ { id, expires }
+> ```
+>
+> **Or skip the shape entirely.** If all you need is a gate, `entitled()` answers
+> a plain boolean and there is nothing to destructure:
+> ```javascript
+> if (!await entitled(user.id, 'premium', { key: RC_KEY })) return deny()
+> ```
+> Reach for `entitlements()` only when you need the expiry dates or the full list.
+
+`customer()` is the one shape this package does **not** normalize — it is
+RevenueCat's raw v1 subscriber object, passed through deliberately so you can
+read fields this package does not model. Its `entitlements` field *is* a keyed
+object (RevenueCat's own shape), which is exactly why the two are easy to
+confuse: `entitlements()` gives you an array of `{ id, expires }`, while
+`customer().entitlements` gives you RevenueCat's raw map. Different functions,
+different shapes, on purpose.
 
 ## Error handling
 
