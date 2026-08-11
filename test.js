@@ -748,6 +748,8 @@ async function testRedeemStub () {
   console.log('  redeem: unsupported resolves cleanly, never crashes ✓')
 }
 
+const FUTURE_MS = Date.now() + 365 * 86400000
+
 async function testServer () {
   const calls = []
   const SUBSCRIBER = {
@@ -780,8 +782,10 @@ async function testServer () {
     if (url.includes('/projects/projPaged/customers/') && url.includes('active_entitlements')) {
       if (url.includes('starting_after')) {
         // v2 reports expires_at as EPOCH MILLISECONDS (per the API
-        // reference), not an ISO string: the mapper must convert it.
-        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: 1658399423658 }] }) }
+        // reference), not an ISO string: the mapper must convert it. Use a
+        // FUTURE timestamp — a past one would encode the expectation that an
+        // expired entitlement is active.
+        return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entl2', expires_at: FUTURE_MS }] }) }
       }
       return {
         ok: true,
@@ -859,7 +863,7 @@ async function testServer () {
   const paged = await server.entitlements('u1', { secret: 'sk_test', project: 'projPaged' })
   assert.deepStrictEqual(paged.map((e) => e.id).sort(), ['plus', 'premium'])
   const plusEnt = paged.find((e) => e.id === 'plus')
-  assert.strictEqual(plusEnt.expires, new Date(1658399423658).toISOString(), 'epoch-ms expires_at converts to ISO')
+  assert.strictEqual(plusEnt.expires, new Date(FUTURE_MS).toISOString(), 'epoch-ms expires_at converts to ISO')
 
   // An entitlement created after the lookup-key map was cached must not read
   // as a raw "entl..." id (which would deny a paying subscriber until the
@@ -942,6 +946,94 @@ async function testServer () {
   }
 
   console.log('  server: v1/v2 paths, honest fallback, pagination, env keys, fail-closed throws ✓')
+}
+
+async function testServerHardening () {
+  const calls = []
+  const iso = (ms) => new Date(ms).toISOString()
+  let listReads = 0
+  global.fetch = async (url, init) => {
+    calls.push({ url, headers: init.headers })
+    if (url.includes('/v1/subscribers/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          subscriber: {
+            entitlements: {
+              // Card is failing, store is retrying: RevenueCat reports the
+              // grace window separately and the device still says entitled.
+              grace: { expires_date: iso(Date.now() - 86400000), grace_period_expires_date: iso(Date.now() + 86400000) },
+              lapsed: { expires_date: iso(Date.now() - 86400000), grace_period_expires_date: iso(Date.now() - 3600000) },
+              lifetime: { expires_date: null },
+              broken: null
+            }
+          }
+        })
+      }
+    }
+    if (url.includes('/projects/projHerd/entitlements?')) {
+      listReads++
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlH', lookup_key: 'premium' }] }) }
+    }
+    if (url.includes('/projects/projHerd/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlH', expires_at: FUTURE_MS }] }) }
+    }
+    if (url.includes('/projects/projEvil/entitlements?')) {
+      // A tampered/buggy page pointer must never redirect the API key.
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlE', lookup_key: 'premium' }], next_page: 'http://attacker.example/steal' }) }
+    }
+    if (url.includes('/projects/projEvil/customers/') && url.includes('active_entitlements')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlE', expires_at: FUTURE_MS }] }) }
+    }
+    if (url.includes('/projects/projSec/entitlements?')) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ id: 'entlS', lookup_key: 'premium' }] }) }
+    }
+    if (url.includes('/projects/projSec/customers/') && url.includes('active_entitlements')) {
+      // Epoch SECONDS instead of ms must not render as 1970.
+      return { ok: true, status: 200, json: async () => ({ items: [{ entitlement_id: 'entlS', expires_at: Math.floor(FUTURE_MS / 1000) }] }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+
+  // A billing grace period keeps a paying customer entitled: their device
+  // says yes, and the server must not disagree.
+  assert.strictEqual(await server.entitled('u1', 'grace', { key: 'appl_pub' }), true, 'grace period stays entitled')
+  assert.strictEqual(await server.entitled('u1', 'lapsed', { key: 'appl_pub' }), false, 'expired grace is not entitled')
+  assert.strictEqual(await server.entitled('u1', 'lifetime', { key: 'appl_pub' }), true, 'null expiry is lifetime')
+  assert.strictEqual(await server.entitled('u1', 'broken', { key: 'appl_pub' }), false, 'a null entitlement object never grants access')
+
+  // 'false' is a string, and truthiness would have turned sandbox ON in
+  // production, hiding every real purchase.
+  calls.length = 0
+  await server.entitled('u1', 'grace', { key: 'appl_pub', sandbox: 'false' })
+  assert.ok(!calls[0].headers['X-Is-Sandbox'], "sandbox:'false' is OFF, not truthy-ON")
+  calls.length = 0
+  await server.entitled('u1', 'grace', { key: 'appl_pub', sandbox: 'yes' })
+  assert.strictEqual(calls[0].headers['X-Is-Sandbox'], 'true', "sandbox:'yes' is ON")
+
+  // A numeric string from config must not crash AbortSignal.timeout.
+  assert.strictEqual(await server.entitled('u1', 'grace', { key: 'appl_pub', timeout: '5000' }), true, 'numeric-string timeout works')
+
+  // A page pointer to another host must NOT receive the API key.
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projEvil' })
+  assert.ok(!calls.some((c) => c.url.includes('attacker')), 'never follows next_page off the RevenueCat origin')
+
+  // Concurrent cold-cache checks make ONE list request, not N.
+  calls.length = 0
+  listReads = 0
+  const herd = await Promise.all(Array.from({ length: 20 }, () => server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projHerd' })))
+  assert.ok(herd.every(Boolean), 'all concurrent checks resolve entitled')
+  assert.strictEqual(listReads, 1, 'in-flight dedup: 20 concurrent checks share one lookup fetch')
+
+  // Epoch seconds must not become 1970.
+  const secs = await server.entitlements('u1', { secret: 'sk_x', project: 'projSec' })
+  assert.ok(new Date(secs[0].expires).getUTCFullYear() > 2020, 'epoch-seconds expires_at is not read as 1970')
+
+  console.log('  server hardening: grace period, sandbox strings, SSRF, herd, epoch units ✓')
 }
 
 async function testV4 () {
@@ -1509,6 +1601,7 @@ async function testBuyRejectsUnusableInput () {
   await testCenterHonesty()
   await testBuyRejectsUnusableInput()
   await testServer()
+  await testServerHardening()
   console.log('all tests passed')
   process.exit(0)
 })().catch((e) => {
