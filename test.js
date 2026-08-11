@@ -782,7 +782,9 @@ async function testServer () {
       return { ok: false, status: 401, json: async () => ({}) }
     }
     if (url.includes('/projects/projLimited/')) {
-      return { ok: false, status: 429, json: async () => ({}) }
+      // RevenueCat sends Retry-After with a 429; callers should back off for
+      // the interval it asks for rather than guessing.
+      return { ok: false, status: 429, headers: { get: (h) => (h.toLowerCase() === 'retry-after' ? '42' : null) }, json: async () => ({}) }
     }
     if (url.includes('/projects/projMissing/')) {
       return { ok: false, status: 404, json: async () => ({}) }
@@ -898,12 +900,13 @@ async function testServer () {
   assert.strictEqual(calls.filter((c) => c.url.includes('/v2/')).length, 0, 'broken v2 remembered, straight to v1')
   assert.strictEqual(v2AttemptsFirst, 1, 'only one v2 probe ever spent')
 
-  // 429 rate limit: surfaces to the caller instead of burning a v1 request.
+  // 429 rate limit: surfaces to the caller instead of burning a v1 request,
+  // and carries the interval RevenueCat asked us to wait.
   calls.length = 0
   await assert.rejects(
     () => server.entitled('u1', 'premium', { secret: 'sk_test', project: 'projLimited' }),
-    (e) => e.status === 429,
-    '429 must throw with .status, not fall back'
+    (e) => e.status === 429 && e.retryAfter === 42,
+    '429 must throw with .status and the Retry-After interval, not fall back'
   )
   assert.ok(!calls.some((c) => c.url.includes('/v1/')), 'no v1 request spent on a rate limit')
 
@@ -1682,6 +1685,20 @@ async function testServerHardening () {
   const herd = await Promise.all(Array.from({ length: 20 }, () => server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projHerd' })))
   assert.ok(herd.every(Boolean), 'all concurrent checks resolve entitled')
   assert.strictEqual(listReads, 1, 'in-flight dedup: 20 concurrent checks share one lookup fetch')
+
+  // Sandbox verification must ride v1 even with a secret key + project
+  // configured: X-Is-Sandbox is a v1 header and v2 has no documented sandbox
+  // support, so routing a tester through v2 would deny every sandbox purchase
+  // with no way for them to fix it.
+  calls.length = 0
+  await server.entitled('u1', 'grace', { secret: 'sk_x', project: 'projHerd', sandbox: true })
+  assert.ok(calls.every((c) => c.url.includes('/v1/')), 'a sandbox check never uses v2')
+  assert.strictEqual(calls[0].headers['X-Is-Sandbox'], 'true', 'and it carries the v1 sandbox header')
+  // ...while the same credentials without sandbox still prefer v2.
+  calls.length = 0
+  await server.entitled('u1', 'premium', { secret: 'sk_x', project: 'projHerd' })
+  assert.ok(calls.some((c) => c.url.includes('/v2/')), 'production checks still use v2 when configured')
+  assert.ok(calls.every((c) => !c.headers['X-Is-Sandbox']), 'the v1-only sandbox header is never sent to v2')
 
   // Epoch seconds must not become 1970.
   const secs = await server.entitlements('u1', { secret: 'sk_x', project: 'projSec' })

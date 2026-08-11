@@ -440,7 +440,17 @@ Because the frontend used `revenuecat.user(user.id)` and the function uses `base
 - Resolution order: explicit `{ key | secret | project }` → env `RC_KEY` / `RC_SECRET` / `RC_PROJECT` → env `REVENUECAT_PUBLIC_KEY` / `REVENUECAT_SECRET_KEY` / `REVENUECAT_PROJECT_ID`.
 - `secret` wins over `key` when both are set. Which API path runs is decided by the key's own prefix — only `sk_…` keys ever use v2; an `sk_…` key placed in `RC_KEY` still unlocks v2, and a public key in `RC_SECRET` still works on v1.
 - `{ timeout: ms }` bounds each RevenueCat request (default 10 s); a hung connection aborts and throws instead of hanging your function.
-- `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases — required while testing, see [Testing](#testing). Off in production.
+- `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases — required while testing, see [Testing](#testing). Off in production. A sandbox check always uses RevenueCat's v1 API even if you configured a secret key and project id: `X-Is-Sandbox` is a v1 header and v2 has no documented sandbox support, so routing a tester through v2 would deny every sandbox purchase. Production checks are unaffected.
+- **Errors carry detail.** The thrown `Error` has `.status` (the HTTP status), and on a `429` also `.retryAfter` in seconds when RevenueCat sends a `Retry-After` header — so you can back off for the interval the API actually asked for:
+
+```javascript
+try {
+  ok = await entitled(user.id, 'premium', { key: RC_KEY })
+} catch (e) {
+  if (e.status === 429) console.warn(`rate limited, retry in ${e.retryAfter ?? 60}s`)
+  return Response.json({ error: 'verification unavailable' }, { status: 503 })
+}
+```
 - The `/server` entry also exports `entitlements(user)` (active entitlements with expiry) and `customer(user)` (the raw RevenueCat subscriber) and works in any Node (18+) or Deno backend.
 
 ## Error handling
