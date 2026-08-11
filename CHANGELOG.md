@@ -58,6 +58,26 @@ gates fail closed.)
   `server.d.ts` remains as a named-exports-only fallback so legacy
   `moduleResolution: "node"` consumers keep resolving.
 
+### Changed (test and release gates)
+
+- **CI verified the working tree, not the package it publishes.** The
+  "package contents resolve" step required files from the git checkout, so it
+  passed even when a file was missing from `package.json` "files" — dropping
+  `server.d.ts` and `server.js` left `npm test`, the resolve step, the type
+  fixtures and publint all green while the published tarball gave consumers
+  `MODULE_NOT_FOUND`. That is the exact regression the node10 fixture was
+  written to prevent. CI now packs the tarball, installs it into a clean
+  directory, and resolves every entry point from there.
+- **The suite was mutation-tested and hardened.** Deliberately breaking
+  money-critical code proved the green suite would not have noticed a build
+  that charged the wrong SKU, kept lapsed subscribers entitled, read the wrong
+  user's subscription server-side, showed a $0.00 price, or resolved a
+  purchase with a paywall's outcome. Every one of those now fails the suite:
+  new scenarios cover server identity and exact entitlement matching, lapsed
+  entitlements on both `info()` paths, plan resolution by name, price and
+  currency through the RC-flavored mapper, shared-result-channel isolation
+  under a stray outcome, anonymous-id stability, and event delivery.
+
 ### Fixed (money-critical)
 
 - **`plans()` mixed every offering in the project, so a promo price could be

@@ -1060,6 +1060,305 @@ async function testTerminalErrorsSettleFast () {
   console.log('  terminal errors settle immediately; redeem() probes on a cold start ✓')
 }
 
+async function testServerIdentityAndMatching () {
+  // The whole point of the server module is that the client cannot be
+  // trusted, so the gate must read the entitlements of the user it was ASKED
+  // about — with a mock that answers differently per user, not one subscriber
+  // for everybody.
+  const seen = []
+  const PEOPLE = {
+    subscriber_1: { pro: { expires_date: null }, pro_trial: { expires_date: null } },
+    freeloader: {}
+  }
+  global.fetch = async (url, init) => {
+    seen.push(url)
+    const m = url.match(/\/v1\/subscribers\/([^/?]+)/)
+    const who = m ? decodeURIComponent(m[1]) : null
+    if (who) {
+      const ents = PEOPLE[who]
+      if (!ents) return { ok: false, status: 404, json: async () => ({}) }
+      return { ok: true, status: 200, json: async () => ({ subscriber: { entitlements: ents } }) }
+    }
+    return { ok: false, status: 404, json: async () => ({}) }
+  }
+  delete require.cache[require.resolve('./server.cjs')]
+  const server = require('./server.cjs')
+  const key = { key: 'appl_pub' }
+
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro', key), true, 'the real subscriber is entitled')
+  assert.strictEqual(await server.entitled('freeloader', 'pro', key), false, "another user's subscription never leaks across")
+  assert.ok(seen.some((u) => u.includes('/freeloader')), 'the request actually asked about the user passed in')
+
+  // Entitlement ids are matched EXACTLY. A gate for 'pro' must not be
+  // satisfied by holding 'pro_trial', and vice versa.
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro_trial', key), true)
+  assert.strictEqual(await server.entitled('subscriber_1', 'p', key), false, 'a prefix of an entitlement id never passes the gate')
+  assert.strictEqual(await server.entitled('subscriber_1', 'pro_trial_extra', key), false, 'a longer id never passes either')
+
+  // A blank/undefined user id must deny, never inherit somebody else's answer.
+  for (const bad of ['', null, undefined]) {
+    assert.deepStrictEqual(await server.entitlements(bad, key), [], 'a falsy user id yields no entitlements')
+    assert.strictEqual(await server.entitled(bad, 'pro', key), false, 'a falsy user id is never entitled')
+  }
+
+  // The configured timeout must reach the request, not just "a signal exists".
+  let seenMs = null
+  const realTimeout = AbortSignal.timeout
+  AbortSignal.timeout = (ms) => { seenMs = ms; return realTimeout.call(AbortSignal, ms) }
+  try {
+    await server.entitled('subscriber_1', 'pro', { key: 'appl_pub', timeout: 4321 })
+    assert.strictEqual(seenMs, 4321, 'the configured timeout is the one actually applied')
+    await server.entitled('subscriber_1', 'pro', { key: 'appl_pub' })
+    assert.strictEqual(seenMs, 10000, 'the documented 10s default is the one actually applied')
+  } finally {
+    AbortSignal.timeout = realTimeout
+  }
+
+  // secret wins over key when both are supplied, as documented.
+  delete require.cache[require.resolve('./server.cjs')]
+  const s2 = require('./server.cjs')
+  seen.length = 0
+  const auths = []
+  const prev = global.fetch
+  global.fetch = async (url, init) => { auths.push(init.headers.Authorization); return prev(url, init) }
+  await s2.entitled('subscriber_1', 'pro', { key: 'appl_pub', secret: 'sk_wins' })
+  assert.strictEqual(auths[0], 'Bearer sk_wins', 'secret wins over key when both are set')
+  global.fetch = prev
+
+  console.log('  server identity: right user, exact id match, real timeout, secret precedence ✓')
+}
+
+async function testLapsedAndPlanResolution () {
+  // The most common real-world state a gate must get right: an entitlement
+  // the customer USED to have. It stays in `all` forever and must never
+  // satisfy has().
+  const win = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: ['basic'], all: ['basic', 'premium'] },
+          subscriptions: [],
+          details: { basic: { active: true }, premium: { active: false, expires: '2020-01-01T00:00:00Z' } }
+        }),
+        history: () => Promise.resolve([])
+      }
+    }
+  }
+  global.window = win
+  global.self = win
+  let iap = freshRequire()
+  assert.strictEqual(await iap.has('basic'), true, 'an active entitlement passes')
+  assert.strictEqual(await iap.has('premium'), false, 'a LAPSED entitlement (in all, not active) must never pass')
+  const info = await iap.info()
+  assert.strictEqual(info.entitlements.premium.active, false, 'info() reports the lapsed entitlement as inactive')
+  assert.strictEqual(info.entitlements.basic.active, true)
+
+  // buy() must resolve the plan the caller named, not simply the first one.
+  const bought = []
+  const win2 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win2.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => Promise.resolve(envelope(4)),
+        purchase: (a) => { bought.push(a.product); return Promise.resolve({ status: 'purchased', product_id: a.product, active_entitlements: ['premium'] }) }
+      }
+    }
+  }
+  global.window = win2
+  global.self = win2
+  iap = freshRequire()
+  const plans = await iap.plans()
+  const annual = plans.find((p) => p.id === 'annual')
+  const r = await iap.buy(annual.id)
+  assert.strictEqual(bought[0], 'premium:annual', 'buy() charges the plan that was named, not plans[0]')
+  assert.strictEqual(r.product, 'premium:annual', 'the result reports the product the store confirmed')
+  assert.deepStrictEqual(r.entitlements, ['premium'], 'the result carries the entitlements the store returned')
+
+  const monthly = plans.find((p) => p.id === 'monthly')
+  assert.strictEqual(monthly.price.value, 9.99, 'the numeric price survives the unified envelope')
+  assert.strictEqual(monthly.price.currency, 'USD', 'the currency survives the unified envelope')
+
+  // The RC-flavored mapper (older builds without `catalog`, falling back to
+  // `offerings`/`products`) must preserve the numeric price and currency too:
+  // a zeroed price renders as "free" and a null currency breaks formatting.
+  const win3 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win3.dsx = {
+    module: {
+      revenuecat: {
+        catalog: () => Promise.reject({ code: 'unknown_action' }),
+        offerings: () => Promise.reject({ code: 'unknown_action' }),
+        products: () => Promise.resolve([{
+          id: 'premium:monthly',
+          type: 'subscription',
+          title: 'Premium Monthly',
+          description: 'All of it',
+          price: { amount: 12.5, formatted: '$12.50', currency: 'CAD' },
+          subscription: { period: 'P1M', period_unit: 'month', period_count: 1 },
+          introductory_offer: { price: { amount: 2.5, formatted: '$2.50' }, period_unit: 'month', period_count: 1, cycles: 3, payment_mode: 'pay_as_you_go' }
+        }])
+      }
+    }
+  }
+  global.window = win3
+  global.self = win3
+  iap = freshRequire()
+  const mapped = await iap.products()
+  assert.strictEqual(mapped[0].price, 12.5, 'the RC-flavored mapper keeps the numeric price')
+  assert.strictEqual(mapped[0].currency, 'CAD', 'the RC-flavored mapper keeps the currency')
+  const mappedPlans = await iap.plans()
+  assert.strictEqual(mappedPlans[0].price.value, 12.5, 'the mapped numeric price reaches plans()')
+  assert.strictEqual(mappedPlans[0].intro.type, 'payg', 'a multi-cycle intro is pay-as-you-go, not pay-up-front')
+
+  // info() on a build with NO per-entitlement details falls back to inferring
+  // from store history — that path must report a lapsed entitlement as
+  // inactive just as the native-details path does.
+  const win4 = { navigator: { userAgent: 'x' }, localStorage: null, __dsxWire: true }
+  win4.dsx = {
+    module: {
+      revenuecat: {
+        customer: () => Promise.resolve({
+          ok: true,
+          runtime: 4,
+          entitlements: { active: ['basic'], all: ['basic', 'premium'] },
+          subscriptions: []
+        }),
+        history: () => Promise.resolve([
+          { productId: 'p_basic', entitlementId: 'basic', isActive: true, willRenew: true, purchaseDate: '2026-01-01T00:00:00Z', expirationDate: '2027-01-01T00:00:00Z' },
+          { productId: 'p_prem', entitlementId: 'premium', isActive: false, willRenew: false, purchaseDate: '2020-01-01T00:00:00Z', expirationDate: '2021-01-01T00:00:00Z' }
+        ])
+      }
+    }
+  }
+  global.window = win4
+  global.self = win4
+  iap = freshRequire()
+  const inferred = await iap.info()
+  assert.strictEqual(inferred.entitlements.basic.active, true, 'inference path: active entitlement is active')
+  assert.strictEqual(inferred.entitlements.premium.active, false, 'inference path: a LAPSED entitlement is not active')
+  assert.strictEqual(inferred.entitlements.premium.expires, '2021-01-01T00:00:00Z', 'inference path reports the real expiry')
+  assert.strictEqual(inferred.entitlements.basic.renews, true, 'inference path reports the real renewal state')
+  assert.strictEqual(inferred.entitlements.premium.renews, false)
+  console.log('  lapsed entitlements denied on both info() paths; mapped prices survive ✓')
+}
+
+async function testSharedResultChannelIsolation () {
+  // buy() and paywall() share ONE native result channel. Each must take only
+  // its own outcome, or dismissing a paywall resolves an in-flight purchase
+  // as a successful sale.
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win.revenueCatProducts = envelope(3)
+          if (typeof win.onRevenueCatProducts === 'function') win.onRevenueCatProducts(win.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://launchPaywall')) {
+          // The paywall is dismissed without buying.
+          const r = { ok: false, cancelled: true, source: 'paywall', product: null, transaction: null, entitlements: [], code: 'purchaseCancelledError' }
+          win.revenueCatResult = r
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(r)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          const r = { ok: true, cancelled: false, source: 'purchase', product: 'premium:monthly', transaction: 'T1', entitlements: ['premium'], code: null }
+          win.revenueCatResult = r
+          if (typeof win.onRevenueCatResult === 'function') win.onRevenueCatResult(r)
+        }
+      }, 15)
+    },
+    configurable: true
+  })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  await iap.products()
+  const [pw, buy] = await Promise.all([iap.paywall(), iap.buy('monthly')])
+  assert.strictEqual(pw.source, 'paywall', 'the paywall takes the paywall outcome')
+  assert.strictEqual(pw.cancelled, true)
+  assert.strictEqual(buy.source, 'purchase', 'the purchase takes the purchase outcome')
+  assert.strictEqual(buy.ok, true, 'a dismissed paywall never resolves an in-flight buy() as a sale')
+  assert.strictEqual(buy.product, 'premium:monthly')
+
+  // The real hazard: a STRAY paywall outcome landing on the shared channel
+  // while a purchase is in flight (a late dismissal, a duplicate emit). The
+  // purchase must ignore it and wait for its own result, or the app records a
+  // sale the store never made — or reports a cancel on a completed purchase.
+  const win2 = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win2, 'despia', {
+    set (cmd) {
+      setTimeout(() => {
+        if (cmd.startsWith('revenuecat://products')) {
+          win2.revenueCatProducts = envelope(3)
+          if (typeof win2.onRevenueCatProducts === 'function') win2.onRevenueCatProducts(win2.revenueCatProducts)
+        } else if (cmd.startsWith('revenuecat://purchase')) {
+          // A late paywall dismissal arrives FIRST, on the same channel.
+          const stray = { ok: false, cancelled: true, source: 'paywall', product: null, transaction: null, entitlements: [], code: 'purchaseCancelledError' }
+          win2.revenueCatResult = stray
+          if (typeof win2.onRevenueCatResult === 'function') win2.onRevenueCatResult(stray)
+          setTimeout(() => {
+            const real = { ok: true, cancelled: false, source: 'purchase', product: 'premium:monthly', transaction: 'T9', entitlements: ['premium'], code: null }
+            win2.revenueCatResult = real
+            if (typeof win2.onRevenueCatResult === 'function') win2.onRevenueCatResult(real)
+          }, 40)
+        }
+      }, 15)
+    },
+    configurable: true
+  })
+  global.window = win2
+  global.self = win2
+  const iap2 = freshRequire()
+  await iap2.products()
+  const solo = await iap2.buy('monthly')
+  assert.strictEqual(solo.source, 'purchase', 'a stray paywall outcome never settles an in-flight purchase')
+  assert.strictEqual(solo.ok, true)
+  assert.strictEqual(solo.transaction, 'T9', 'the purchase resolves with its OWN store transaction')
+  console.log('  shared result channel: buy() and paywall() never take each other\'s outcome ✓')
+}
+
+async function testAnonIdStability () {
+  // Anonymous purchases made before login must all belong to ONE RevenueCat
+  // customer on this device, or pre-signup revenue scatters.
+  const store = {}
+  const win = {
+    navigator: { userAgent: 'despia-iphone' },
+    localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v) } }
+  }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const first = iap._anon()
+  assert.ok(/^b44_/.test(first), 'a synthesized id is generated')
+  assert.strictEqual(iap._anon(), first, 'the same anonymous id comes back on every call')
+  const fresh2 = freshRequire()
+  assert.strictEqual(fresh2._anon(), first, 'and it survives a reload from localStorage')
+  console.log('  anonymous id is stable across calls and reloads ✓')
+}
+
+async function testEventDelivery () {
+  const win = { navigator: { userAgent: 'despia-iphone' }, localStorage: null }
+  Object.defineProperty(win, 'despia', { set () {}, configurable: true })
+  global.window = win
+  global.self = win
+  const iap = freshRequire()
+  const got = { purchase: [], center: [], result: [] }
+  iap.on('purchase', (d) => got.purchase.push(d))
+  iap.on('center', (e) => got.center.push(e))
+  iap.on('result', (r) => got.result.push(r))
+  win.onRevenueCatPurchase({ info: 1 })
+  win.onRevenueCatCenter({ event: 'restoreCompleted' })
+  win.onRevenueCatResult({ ok: true, source: 'purchase' })
+  assert.deepStrictEqual(got.purchase, [{ info: 1 }], "on('purchase') receives the native payload")
+  assert.deepStrictEqual(got.center, [{ event: 'restoreCompleted' }], "on('center') receives Customer Center events")
+  assert.strictEqual(got.result.length, 1, "on('result') receives outcomes")
+  iap.off('purchase')
+  win.onRevenueCatPurchase({ info: 2 })
+  assert.strictEqual(got.purchase.length, 1, 'off(event) with no fn removes every listener for it')
+  console.log("  events: purchase/center/result delivered, off(event) removes all ✓")
+}
+
 async function testServerHardening () {
   const calls = []
   const iso = (ms) => new Date(ms).toISOString()
@@ -1714,7 +2013,12 @@ async function testBuyRejectsUnusableInput () {
   await testBuyRejectsUnusableInput()
   await testMultiOfferingPricing()
   await testTerminalErrorsSettleFast()
+  await testLapsedAndPlanResolution()
+  await testSharedResultChannelIsolation()
+  await testAnonIdStability()
+  await testEventDelivery()
   await testServer()
+  await testServerIdentityAndMatching()
   await testServerHardening()
   console.log('all tests passed')
   process.exit(0)

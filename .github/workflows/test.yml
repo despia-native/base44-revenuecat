@@ -27,11 +27,24 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Run the runtime simulation suite
         run: npm test
-      - name: Check the package contents resolve
+      # Resolve checks MUST run against the packed tarball, not the checkout:
+      # against the working tree they pass even when a file is missing from
+      # package.json "files", which is exactly how a shipped package can be
+      # broken while every gate stays green.
+      - name: Check the PUBLISHED package resolves standalone
         run: |
-          node -e "require('./index.js')"
-          node -e "require('./server.cjs')"
-          node --input-type=module -e "import('./server.mjs')"
+          npm pack --silent
+          mkdir -p /tmp/consumer/node_modules
+          tar xzf base44-revenuecat-*.tgz -C /tmp/consumer
+          mv /tmp/consumer/package /tmp/consumer/node_modules/base44-revenuecat
+          cd /tmp/consumer
+          node -e "const rc=require('base44-revenuecat'); if (typeof rc.buy!=='function') throw new Error('main entry broken')"
+          node -e "const s=require('base44-revenuecat/server'); if (typeof s.entitled!=='function') throw new Error('server entry broken')"
+          node -e "const s=require('./node_modules/base44-revenuecat/server.js'); if (typeof s.entitled!=='function') throw new Error('legacy resolver shim missing from the tarball')"
+          node --input-type=module -e "import s, { entitled } from 'base44-revenuecat/server'; if (typeof entitled!=='function'||typeof s.entitled!=='function') throw new Error('esm entry broken')"
+          for f in server.d.ts server.d.cts server.d.mts index.d.ts; do
+            test -f node_modules/base44-revenuecat/$f || { echo "missing from tarball: $f"; exit 1; }
+          done
 
   types:
     runs-on: ubuntu-latest
