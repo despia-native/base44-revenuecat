@@ -10,7 +10,7 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
-## [Unreleased]
+## [1.7.0] - 2026-08-11
 
 ### Fixed
 

@@ -1,32 +1,73 @@
-# Publish to npm with provenance, from CI rather than a laptop.
+# Ship to npm automatically when the version changes on main.
+#
+# The whole release ceremony is: bump the version in package.json, write the
+# CHANGELOG section, merge to main. This workflow notices the new version, runs
+# every gate against it, publishes to npm with provenance, tags the commit and
+# writes the GitHub Release. Nothing to remember, nothing to run locally.
+#
+# It is version-CHANGE triggered, not push triggered: an ordinary commit to
+# main (a docs fix, a test) publishes nothing, because the version on npm still
+# matches package.json. That is what makes it safe to leave on.
 #
 # Provenance is a signed, verifiable link between the tarball on npm and the
-# exact commit and workflow run that built it. npm shows it as a "Provenance"
-# badge on the package page. For a package that handles money and is aimed at
-# people who cannot audit it themselves, that link is worth more than it costs
-# to set up — it means "this is really built from that public source" is
-# checkable rather than trusted.
+# exact commit and workflow run that built it — npm shows it as a "Provenance"
+# badge. For a package that handles money and is aimed at people who cannot
+# audit it themselves, that link is worth having.
 #
-# Triggered by pushing a version tag (v1.6.2), or manually. It refuses to
-# publish if the tag and package.json disagree, and it runs the full suite
-# first, so a release cannot skip the gates.
-#
-# One-time setup: add an npm automation token as the NPM_TOKEN repository
-# secret (npmjs.com → Access Tokens → Generate → Automation).
+# ONE-TIME SETUP: add an npm automation token as the NPM_TOKEN repository
+# secret (npmjs.com → Access Tokens → Generate New Token → Automation, then
+# GitHub → Settings → Secrets and variables → Actions → New repository secret).
+# Until that exists the publish step fails and nothing else is affected.
 
 name: release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  # Manual re-run, for a publish that failed after the version already landed.
   workflow_dispatch:
 
 permissions:
-  contents: write      # create the GitHub Release
+  contents: write      # tag the commit and create the GitHub Release
   id-token: write      # REQUIRED for provenance
 
+# Never let two releases race: a second push while one is publishing waits
+# rather than double-publishing or tagging out of order.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: v
+        name: Is this version already on npm?
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Ask npm for this EXACT version. A miss means it is new and should
+          # ship; a hit means main carries a version that is already published,
+          # which is the normal state after any non-release commit.
+          if npm view "base44-revenuecat@$VERSION" version >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$VERSION is already on npm — nothing to publish."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$VERSION is not on npm yet — releasing."
+          fi
+
   release:
+    needs: check
+    if: needs.check.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,8 +77,8 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      # The gates run again here rather than trusting that they ran on the
-      # commit: a tag can point anywhere.
+      # The gates run again here rather than trusting that they ran earlier.
+      # Nothing reaches npm without passing them on the exact commit shipping.
       - name: Run the suite
         run: npm test
       - name: Type-check
@@ -45,37 +86,42 @@ jobs:
       - name: Lint the published package shape
         run: npx --yes publint
 
-      - name: Check the tag matches package.json
-        if: startsWith(github.ref, 'refs/tags/v')
+      # The same pack-and-install check CI does: a resolve test against the
+      # working tree passes even when a file is missing from package.json
+      # "files", which is how a broken tarball once shipped.
+      - name: Check the package resolves standalone from the tarball
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "tag v$TAG does not match package.json $PKG"
-            exit 1
-          fi
-          echo "releasing $PKG"
+          npm pack --silent
+          mkdir -p /tmp/consumer/node_modules
+          tar xzf base44-revenuecat-*.tgz -C /tmp/consumer
+          mv /tmp/consumer/package /tmp/consumer/node_modules/base44-revenuecat
+          cd /tmp/consumer
+          node -e "const rc=require('base44-revenuecat'); if (typeof rc.whoami!=='function') throw new Error('main entry broken')"
+          node -e "const s=require('base44-revenuecat/server'); if (typeof s.entitled!=='function') throw new Error('server entry broken')"
 
-      # Guarded like the version check above it. Without this, dispatching the
-      # workflow from any branch publishes to npm while SKIPPING the tag/version
-      # agreement check — provenance would then attest to a commit that was
-      # never released.
-      - name: Publish with provenance
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish to npm with provenance
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # An empty Releases tab reads as abandoned regardless of how active the
-      # commit log is. The notes come from CHANGELOG.md, which is already
-      # written per release, so this adds no second place to maintain.
+      # Tag and Release AFTER a successful publish, so a tag never claims a
+      # version npm does not have.
+      - name: Tag the release
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin "v$VERSION"
+
       - name: Publish the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          # Pull just this version's section out of the changelog.
+          # Notes come from CHANGELOG.md, which is already written per release,
+          # so there is no second place to maintain.
           awk -v v="## [$VERSION]" '
             index($0, v) == 1 { on = 1; next }
             on && /^## \[/ { exit }
@@ -84,6 +130,4 @@ jobs:
           if [ ! -s /tmp/notes.md ]; then
             echo "No CHANGELOG section for $VERSION" > /tmp/notes.md
           fi
-          gh release create "v$VERSION" \
-            --title "v$VERSION" \
-            --notes-file /tmp/notes.md
+          gh release create "v$VERSION" --title "v$VERSION" --notes-file /tmp/notes.md
