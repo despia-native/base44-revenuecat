@@ -111,6 +111,18 @@ gates fail closed.)
 
 ### Documentation
 
+- **The server example no longer teaches a 500.** `base44.auth.me()` *throws*
+  when a request carries no signed-in session rather than returning `null`, and
+  the documented example called it outside the `try`, so anyone copying it got
+  an uncaught throw surfacing as `500 "Authentication required to view users"`
+  — which reads as a broken purchase and is not one. The example now catches it
+  and answers `401`, and the three denials are spelled out: **401** nobody is
+  signed in (send them to sign-in), **402** signed in but not subscribed (show
+  the paywall), **503** cannot verify right now (retry, and never show a
+  paywall — a paying subscriber must not be asked to buy again because
+  RevenueCat blipped). Troubleshooting entries in the README and the
+  entitlements guide are keyed to the literal error text.
+
 - **Which key goes where.** New README section covering the setup question that
   trips people up most: RevenueCat hands you several keys, and the two places a
   key can go follow *opposite* rules. In the app a key must match its platform

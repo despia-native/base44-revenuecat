@@ -516,7 +516,16 @@ const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
 
 export default async function (req) {
   const base44 = createClientFromRequest(req)
-  const user = await base44.auth.me()              // server-verified identity, never trust a client-sent id
+
+  // auth.me() THROWS when the request carries no signed-in session — it does
+  // not return null. Left uncaught it becomes a 500 reading "Authentication
+  // required to view users", which looks like a purchase bug and is not one.
+  let user
+  try {
+    user = await base44.auth.me()        // server-verified identity, never trust a client-sent id
+  } catch (e) {
+    return Response.json({ error: 'sign in required' }, { status: 401 })
+  }
 
   let ok = false
   try {
@@ -531,6 +540,23 @@ export default async function (req) {
   return Response.json({ premium: true /* , ...do the paid work here */ })
 }
 ```
+
+**Three different denials, three different codes.** They all withhold the paid
+action, but they mean different things to your app and to your metrics — collapse
+them and every one of these looks like "the purchase is broken":
+
+| Code | Means | What the app should do |
+|---|---|---|
+| **401** | Nobody is signed in | Send them to sign-in. There is no user to verify yet. |
+| **402** | Signed in, not subscribed | Show the paywall. This is the normal upsell path. |
+| **503** | Cannot verify right now | Ask them to retry. **Never** show a paywall — a paying subscriber must not be asked to buy again because RevenueCat was briefly unreachable. |
+
+The 401 case is the one people hit first, because a store or pricing page is
+often reachable before sign-in. Server-side verification is per-user by
+design: it looks up entitlements for the authenticated user's id — the same id
+the app binds with `revenuecat.user(id)` — so an anonymous request has nothing
+to check. Either gate the page behind sign-in, or handle the 401 by prompting
+for it.
 
 Call it from your app:
 
@@ -717,6 +743,7 @@ upgrade path is the one that keeps the bug.
 
 - **`products()` returns `[]` in the installed app** → the build predates the RevenueCat integration or the keys were added after the last build: check Despia → Integrations → RevenueCat, then rebuild. Also confirm your products are attached to an offering in RevenueCat.
 - **`has('premium')` is false right after buying** → in order of likelihood: (a) you copied `premium` out of these docs and no entitlement with that id exists in your RevenueCat dashboard, so it can never be true. Use your own id. (b) The entitlement exists but the purchased product is not attached to it (Product catalog → Entitlements). (c) The id differs by case or whitespace: it is matched literally, so `Premium` is not `premium`. (d) You bought a consumable or credit pack, which grants no entitlement by design. Check `result.ok` for those, not `has()`. `status()` shows the ids the device actually sees, which is the fastest way to tell these apart.
+- **A 500 with `"Authentication required to view users"`, or `AxiosError: Request failed with status code 500` from your own function** → this is **not** a RevenueCat or purchase failure. `base44.auth.me()` **throws** when the request carries no signed-in session rather than returning `null`, and an uncaught throw becomes a generic 500. Wrap it and answer `401` instead, as in [the server example](#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets). It shows up first on store, pricing or paywall pages, which are often reachable before sign-in — server verification is per-user, so an anonymous request has no id to check. Either gate the page behind sign-in or handle the 401 by prompting for it. Do not "fix" it by falling back to a client-side `has()` check: that is the gate a tampered client can lie to, which is the reason the server check exists.
 - **Server check says false, client says true** → two causes, in order of likelihood. (a) **You are testing in sandbox.** RevenueCat's API returns production purchases only unless you pass `{ sandbox: true }` (or set `RC_SANDBOX=true`), so a TestFlight or license-tester purchase is invisible to `entitled()` while the device can see it. (b) The ids differ: log `revenuecat.id` in the app and `user.id` in the function, they must be identical strings.
 - **Purchases work on one platform but the other is completely dead** (no paywall, no products, `products()` empty) → that platform's key is missing or holds the wrong platform's key in Despia → Integrations → RevenueCat. In the app a key must **match** its platform: an Android build cannot start with an `appl_…` key, and an iOS build cannot start with a `goog_…` key. Fill the matching field and rebuild. (The server check is the opposite — one key of either platform verifies everyone. See [Which key goes where](#which-key-goes-where).)
 - **Nothing happens in the browser** → correct: purchases only exist inside the installed iOS/Android app. Preview logic with `revenuecat.native`.

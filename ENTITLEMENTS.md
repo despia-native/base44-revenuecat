@@ -355,6 +355,9 @@ Sandbox purchases are free and appear in the dashboard within seconds.
 2. The entitlement exists but the purchased product is not attached to it.
 3. The id differs by case or whitespace. It is matched literally.
 4. You bought a consumable, which grants no entitlement by design. Check `result.ok` instead.
+5. The check never ran: the request had no signed-in session, so `base44.auth.me()` threw and the
+   function answered a generic 500 (`"Authentication required to view users"`) before reading any
+   entitlement. That is an authentication bug, not a purchase one — catch it and answer 401.
 5. You never called `revenuecat.user(id)`, so the purchase landed on a different customer.
 
 `revenuecat.status()` shows the ids the device actually sees, which separates these in one call.
