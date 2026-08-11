@@ -6,6 +6,11 @@
 export interface ServerOptions {
   /**
    * Zero-secret auth: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+   * Either platform's key works and ONE is enough: this check is scoped to
+   * your RevenueCat project, not to a store, so an appl_ key also verifies
+   * Google Play subscribers and a goog_ key also verifies App Store
+   * subscribers. (Inside the app the rule is the opposite - there a key must
+   * match the platform it runs on.)
    * RevenueCat's v1 subscriber endpoint accepts public keys. Note that the
    * v1 subscriber read is create-on-read: an id RevenueCat has never seen is
    * created as a customer (HTTP 200 or 201). Configure the key server-side

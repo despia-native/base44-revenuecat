@@ -49,12 +49,12 @@ You do **not** need webhooks, a subscriptions table, or native code. The two que
 ### Part 1: RevenueCat
 
 1. Create a free account at [app.revenuecat.com](https://app.revenuecat.com) (free until well past your first revenue).
-2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key.
-3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON.
+2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key. *Shipping Android only? Skip this step — see [Which key goes where](#which-key-goes-where).*
+3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON. *Shipping iOS only? Skip this step.*
 4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching products, tiers, lifetime unlocks and consumables are all covered in [the entitlements guide](ENTITLEMENTS.md).
 5. **Product catalog → Offerings**: group products into an offering (the `default` offering is what paywalls show), e.g. a monthly and an annual package.
 6. Optional but recommended: design your paywall in **Paywalls**. `revenuecat.paywall()` presents it natively, priced in each user's own currency, and you can restyle it from the dashboard without an app update.
-7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL).
+7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL). A platform's key only exists once you have added that platform's app in step 2 or 3 — if you see no `goog_…`, the Play Store app has not been added yet.
 
 ### Part 2: Despia (the only step that touches your app)
 
@@ -62,13 +62,47 @@ Open **Despia → Your App → Settings → Integrations → RevenueCat** and pa
 
 | Field | Value |
 |---|---|
-| iOS key | your `appl_…` public SDK key |
-| Android key | your `goog_…` public SDK key |
+| iOS key | your `appl_…` public SDK key (leave empty if you don't ship iOS) |
+| Android key | your `goog_…` public SDK key (leave empty if you don't ship Android) |
 | Global project ID | your `proj…` project id |
 
 Then **trigger a new build**. The RevenueCat SDK is compiled into the binary, so integration changes always need a rebuild. Until then purchases stay dormant.
 
 That's the entire native setup. Everything else is the JavaScript below, written inside your Base44 app.
+
+### Which key goes where
+
+RevenueCat gives you several keys and it is not obvious which one belongs where. There are only **two slots**, and they follow **opposite rules** — this is the single most common setup mix-up:
+
+| Slot | Which key | Does an Apple key work for Android? |
+|---|---|---|
+| **In the app** (Despia integration fields) | must **match the platform** — one field per platform | **No, never** |
+| **On your server** (the `entitled()` check) | **any one key** from the project | **Yes** |
+
+**In the app, the key starts the store connection.** An Android build talks to Google Play, and Google Play only accepts a `goog_…` key. Give an Android build an `appl_…` key and RevenueCat never starts: no paywall, no products, no purchases. That is why Despia has two separate fields rather than one — a build takes its own platform's key and ignores the other.
+
+**On the server, the key is only a password to read your project.** It talks to no store. Entitlements are stored per *customer* per *project*, not per platform, so any key opens the same door — and it works in both directions. An `appl_…` key correctly reports a Google Play subscriber as entitled, and a `goog_…` key correctly reports an App Store subscriber as entitled. You need **one** key server-side, not one per platform, and no code in this package branches on platform.
+
+**Shipping only one platform?** Everything still applies, minus the half you don't use. Add only that platform's app in RevenueCat, fill only that field in Despia, leave the other empty, and use that same key on the server:
+
+| | iOS-only app | Android-only app |
+|---|---|---|
+| RevenueCat app to add | App Store | Play Store |
+| Despia field to fill | iOS key | Android key |
+| Key you'll have | `appl_…` | `goog_…` |
+| Server key to use | that same `appl_…` | that same `goog_…` |
+
+**Reading a key at a glance** — the prefix tells you exactly what it is:
+
+| Prefix | What it is | Safe in client code? |
+|---|---|---|
+| `appl_…` | iOS / App Store **public** SDK key | Yes — it ships inside your app binary |
+| `goog_…` | Android / Play Store **public** SDK key | Yes — same |
+| `sk_…` | **Secret** server-side key, project-wide | **No** — server only, keep it in Base44 secrets |
+
+The two public keys are safe to paste into a dashboard or commit in a backend function. An `sk_…` key is not: it can read and modify your whole project, so it belongs in secrets and never in client code.
+
+One genuine platform difference exists in the API itself: `revenuecat.redeem()` (Apple offer codes) returns `{ supported: false, code: 'unsupported' }` on Android, because Google Play has no in-app redemption sheet. Everything else — `purchase()`, `has()`, `paywall()`, `offerings()`, `restore()`, `customerCenter()` — behaves identically on both platforms.
 
 ---
 
@@ -403,7 +437,13 @@ import { entitled } from 'npm:base44-revenuecat/server'
 // Your PUBLIC SDK key from Despia → Integrations → RevenueCat (safe to paste:
 // it ships inside your app binary anyway). Configure it HERE, server-side;
 // never read it from the request.
-const RC_KEY = 'appl_XXXXXXXXXXXX'
+//
+// EITHER platform's key works here, and you only need one. The server reads
+// your project, not a store: an appl_ key verifies Google Play subscribers and
+// a goog_ key verifies App Store subscribers. Use whichever you have.
+// (In the app it's the opposite — the key must match the platform. See
+// "Which key goes where" above.)
+const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
 
 export default async function (req) {
   const base44 = createClientFromRequest(req)
@@ -536,6 +576,7 @@ const ok = await entitled(user.id, 'premium', { key: RC_KEY, sandbox: testing })
 - **`products()` returns `[]` in the installed app** → the build predates the RevenueCat integration or the keys were added after the last build: check Despia → Integrations → RevenueCat, then rebuild. Also confirm your products are attached to an offering in RevenueCat.
 - **`has('premium')` is false right after buying** → in order of likelihood: (a) you copied `premium` out of these docs and no entitlement with that id exists in your RevenueCat dashboard, so it can never be true. Use your own id. (b) The entitlement exists but the purchased product is not attached to it (Product catalog → Entitlements). (c) The id differs by case or whitespace: it is matched literally, so `Premium` is not `premium`. (d) You bought a consumable or credit pack, which grants no entitlement by design. Check `result.ok` for those, not `has()`. `status()` shows the ids the device actually sees, which is the fastest way to tell these apart.
 - **Server check says false, client says true** → two causes, in order of likelihood. (a) **You are testing in sandbox.** RevenueCat's API returns production purchases only unless you pass `{ sandbox: true }` (or set `RC_SANDBOX=true`), so a TestFlight or license-tester purchase is invisible to `entitled()` while the device can see it. (b) The ids differ: log `revenuecat.id` in the app and `user.id` in the function, they must be identical strings.
+- **Purchases work on one platform but the other is completely dead** (no paywall, no products, `products()` empty) → that platform's key is missing or holds the wrong platform's key in Despia → Integrations → RevenueCat. In the app a key must **match** its platform: an Android build cannot start with an `appl_…` key, and an iOS build cannot start with a `goog_…` key. Fill the matching field and rebuild. (The server check is the opposite — one key of either platform verifies everyone. See [Which key goes where](#which-key-goes-where).)
 - **Nothing happens in the browser** → correct: purchases only exist inside the installed iOS/Android app. Preview logic with `revenuecat.native`.
 - **A `buy()` call seems stuck right after a paywall was shown** → purchase, paywall, and redeem outcomes share one native result channel and are processed in order. If a paywall was presented but the native layer never reported its outcome (e.g. the app was killed mid-sheet), queued purchase calls wait behind it until the paywall wait times out. A fresh app start clears the queue.
 - **`has()` feels slow / you call it on every render** → each `has()`/`status()` call re-asks the native layer (a customer read, plus store history on classic builds). Check once per screen or on the `result`/`purchase` events, keep the boolean in your app state, and re-check after purchases — as in the [complete client pattern](#gate-premium-features-the-complete-client-pattern).

@@ -11,6 +11,12 @@
 //
 // Auth, two options, lowest friction first:
 //   • ZERO-SECRET: your RevenueCat PUBLIC SDK key (appl_... / goog_...).
+//     EITHER platform's key works and you only need ONE: this checks your
+//     RevenueCat PROJECT, not a store, and entitlements are per-customer and
+//     store-agnostic, so an appl_ key verifies Google Play subscribers and a
+//     goog_ key verifies App Store subscribers. Nothing here branches on
+//     platform. (Inside the app it is the opposite: the key must match the
+//     platform it runs on. See "Which key goes where" in the README.)
 //     RevenueCat's v1 subscriber endpoint accepts public keys, so the only
 //     config is a value that already ships inside your app binary. Note that
 //     GET /v1/subscribers is not a pure read: RevenueCat CREATES the customer
@@ -89,7 +95,7 @@ function creds (opts) {
     env('REVENUECAT_SECRET_KEY') || env('REVENUECAT_PUBLIC_KEY')
   const project = opts.project || env('RC_PROJECT') || env('REVENUECAT_PROJECT_ID') || null
   if (!auth) {
-    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys).')
+    throw new Error('base44-revenuecat/server: missing RevenueCat API key. Pass { key } with your PUBLIC SDK key (appl_.../goog_...) or { secret } with a server-side sk_... key, or set RC_KEY / RC_SECRET (keys live at app.revenuecat.com -> Project settings -> API keys). Either platform key works and one is enough: this check is project-scoped, not platform-scoped, so an appl_ key also verifies Google Play subscribers and vice versa.')
   }
   // Number() so a numeric string from config/env ('5000') works instead of
   // throwing inside AbortSignal.timeout.

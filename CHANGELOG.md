@@ -10,6 +10,23 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
+## [Unreleased]
+
+### Documentation
+
+- **Which key goes where.** New README section covering the setup question that
+  trips people up most: RevenueCat hands you several keys, and the two places a
+  key can go follow *opposite* rules. In the app a key must match its platform
+  (an Android build cannot start with an `appl_…` key); on the server any one
+  key of either platform verifies every subscriber, because the check is scoped
+  to the project rather than to a store. Includes a prefix table
+  (`appl_`/`goog_`/`sk_`, and which are safe in client code), a single-platform
+  column for iOS-only and Android-only apps, and a troubleshooting entry for the
+  symptom this causes — one platform working while the other is entirely dead.
+- The same clarification now appears wherever a key is configured, so it is
+  found from any direction: the `ServerOptions.key` JSDoc, the `server.cjs`
+  header, the missing-key error message, SPEC.md and ENTITLEMENTS.md.
+
 ## [1.6.1] - 2026-08-11
 
 ### Fixed

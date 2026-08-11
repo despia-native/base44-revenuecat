@@ -262,7 +262,9 @@ import { entitled } from 'npm:base44-revenuecat/server'
 
 // Your PUBLIC SDK key (appl_… / goog_…) from Despia → Integrations →
 // RevenueCat. Configure it here, server-side — never read it from the request.
-const RC_KEY = 'appl_XXXXXXXXXXXX'
+// Either platform's key works and one is enough: the check reads your project,
+// not a store, so an appl_ key also verifies Google Play subscribers.
+const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
 
 let ok = false
 try {
