@@ -47,7 +47,7 @@
 //
 // Every function THROWS on failure: missing key, RevenueCat non-2xx answers
 // (including 429 rate limits), and network errors/timeouts. Wrap calls in
-// try/catch and fail closed (deny access) — see the README's server section.
+// try/catch and fail closed (deny access) - see the README's server section.
 //
 // With a project id (the "Global project ID" from Despia > Your App >
 // Integrations > RevenueCat) AND a secret key, the check uses RevenueCat's
@@ -164,14 +164,14 @@ const lookupMiss = {}
 //
 // Everything else cached here is a lookup table; the answer was never cached,
 // so an app that gates every request spends one RevenueCat call per request
-// and scales linearly into 429s — and a 429 throws, which fail-closed turns
+// and scales linearly into 429s - and a 429 throws, which fail-closed turns
 // into a 503 for a paying customer. That is the most likely way a quiet
 // deployment stops being quiet.
 //
 // POSITIVE ANSWERS ONLY, and this asymmetry is the whole design. Caching a
 // grant briefly costs at most a few seconds of access after a cancellation.
 // Caching a denial makes a customer who just paid keep hitting a locked door
-// until the TTL expires — the exact failure this package spends the v1
+// until the TTL expires - the exact failure this package spends the v1
 // confirmation request to avoid. So a denial is never stored, and a cached
 // grant is dropped the moment it expires rather than being served stale.
 //
@@ -191,8 +191,8 @@ function cachedAnswer (key) {
   const hit = answerCache.get(key)
   if (!hit) return null
   // The expiry is the one the WRITER intended, not whatever ttl this caller
-  // happens to pass. Two call sites sharing a user and credential — a webhook
-  // handler on 5s and a page gate on an hour — would otherwise let the gate
+  // happens to pass. Two call sites sharing a user and credential - a webhook
+  // handler on 5s and a page gate on an hour - would otherwise let the gate
   // serve the webhook's short-lived entry for the full hour.
   if (hit.expires <= Date.now()) { answerCache.delete(key); return null }
   // A COPY. Returning the stored array by reference lets an ordinary caller
@@ -268,7 +268,7 @@ async function v2Entitlements (user, c) {
   const id = encodeURIComponent(user)
   const first = await rcFetch(`${V2}/projects/${encodeURIComponent(c.project)}/customers/${id}/active_entitlements?limit=100`, c)
   if (first.status === 404) {
-    // Ambiguous: an unseen customer 404s, but so does a wrong project id —
+    // Ambiguous: an unseen customer 404s, but so does a wrong project id -
     // and treating the latter as "no entitlements" would silently deny every
     // paying subscriber. Ask the project-scoped entitlements list (cached
     // ~5 minutes) to disambiguate: it answering proves the project id is
@@ -295,7 +295,7 @@ async function v2Entitlements (user, c) {
   // An entitlement created after this project's map was cached would not be
   // in it, and returning the raw "entl..." id would read as a DIFFERENT
   // entitlement than the one the app gates on: a paying subscriber denied
-  // until the cache expired. A miss refreshes the map once instead — but only
+  // until the cache expired. A miss refreshes the map once instead - but only
   // once per backoff window, or an id the list genuinely never explains (a
   // deleted entitlement) would re-fetch the whole list on every single call.
   if (items.some((e) => !keys[e.entitlement_id])) {
@@ -350,7 +350,7 @@ async function v1Entitlements (user, c) {
     )
     // A lifetime/promotional grant is RevenueCat explicitly reporting
     // expires_date: null. An entitlement carrying NEITHER field is a shape we
-    // don't recognise — deny rather than assume forever access.
+    // don't recognise - deny rather than assume forever access.
     if (expires === null && grace === null) {
       if (Object.prototype.hasOwnProperty.call(ent, 'expires_date')) out.push({ id: key, expires: null })
     } else if (until > now) {
@@ -418,7 +418,7 @@ async function resolveEntitlements (user, c, opts) {
   // never-subscribed users and you would rather not spend it.
   const confirm = opts && opts.confirmDenials === false ? false : true
   // Sandbox verification rides v1, always. X-Is-Sandbox is a v1 header, and
-  // v2 has no documented way to include sandbox purchases — its
+  // v2 has no documented way to include sandbox purchases - its
   // active_entitlements has been observed empty for a customer v1 reports as
   // entitled from a sandbox purchase. Silently answering "not entitled" for
   // every tester on the secret-key path would make the option a lie, so when
@@ -429,13 +429,13 @@ async function resolveEntitlements (user, c, opts) {
       if (active === null) return []          // unknown customer: nothing to confirm
       if (active.length || !confirm) return active
       // v2 knows this customer but lists nothing active. That is the
-      // ambiguous case — ask v1 before denying.
+      // ambiguous case - ask v1 before denying.
       return await v1Entitlements(user, c)
     } catch (e) {
       // Only a key/project mismatch means "v2 is not for this setup": fall
       // back to v1, which answers for every key, and remember the verdict.
       // Anything else (429 rate limit, 5xx, network failure, timeout) would
-      // fail on v1 too — surface it instead of spending a second request.
+      // fail on v1 too - surface it instead of spending a second request.
       if (e && (e.status === 401 || e.status === 403 || e.status === 404)) {
         v2Broken[broken] = Date.now()
       } else {
@@ -446,7 +446,7 @@ async function resolveEntitlements (user, c, opts) {
   return v1Entitlements(user, c)
 }
 
-// Active entitlements for a user, as an ARRAY of { id, expires } — not a keyed
+// Active entitlements for a user, as an ARRAY of { id, expires } - not a keyed
 // object. Object.keys() on the result gives positions ('0','1'), not ids, and
 // it fails quietly because those are valid strings. Use entitled() when you
 // only need a gate; reach for this when you need expiry dates or the list.

@@ -1,6 +1,6 @@
 // Type definitions for require('base44-revenuecat/server'): server-side
 // RevenueCat subscriber verification for Node backends (CommonJS entry).
-// Note: the CommonJS entry has NO default export — use the named exports
+// Note: the CommonJS entry has NO default export - use the named exports
 // (or destructure the require result).
 
 export interface ServerOptions {
@@ -26,7 +26,7 @@ export interface ServerOptions {
   secret?: string
   /**
    * RevenueCat project id (proj...). Falls back to env RC_PROJECT /
-   * REVENUECAT_PROJECT_ID. Only used together with a secret (sk_...) key —
+   * REVENUECAT_PROJECT_ID. Only used together with a secret (sk_...) key -
    * public keys always ride the v1 API.
    */
   project?: string
@@ -39,7 +39,7 @@ export interface ServerOptions {
    * "not entitled" for a purchase the device can see. Falls back to env
    * RC_SANDBOX / REVENUECAT_SANDBOX. String values are parsed, not coerced:
    * "true"/"1"/"yes"/"on" enable it, anything else (including the string
-   * "false") does not. Leave off in production — enabling it there hides
+   * "false") does not. Leave off in production - enabling it there hides
    * real purchases and denies every paying customer.
    *
    * Sandbox checks always use RevenueCat's v1 API, even when a secret key and
@@ -55,7 +55,7 @@ export interface ServerOptions {
    * v2's rules for grace periods and other still-granting states are
    * undocumented, and it has been observed returning nothing for a customer
    * v1 reports as entitled. Granting wrongly costs a little revenue; denying
-   * a paying customer costs the customer — so a denial is verified. This
+   * a paying customer costs the customer - so a denial is verified. This
    * costs one extra request ONLY when v2 reports nothing for a customer it
    * knows; a positive answer and an unknown customer both cost nothing extra.
    * Set false if your traffic is mostly never-subscribed users and you would
@@ -68,14 +68,14 @@ export interface ServerOptions {
    * default (`0`), and opt-in per call, e.g. `{ cacheMs: 30000 }`.
    *
    * Without it, an app that gates every request spends one RevenueCat request
-   * per request and scales linearly into rate limiting — and a 429 throws,
+   * per request and scales linearly into rate limiting - and a 429 throws,
    * which fail-closed handling turns into a 503 for a paying customer.
    *
    * Only grants are cached, never denials. Caching a grant briefly costs at
    * most a few seconds of access after a cancellation; caching a denial would
    * leave a customer who just subscribed locked out until the TTL expired.
    * Entries are keyed by credential, sandbox flag and user id, so two
-   * projects — or a key rotation — never share an answer.
+   * projects - or a key rotation - never share an answer.
    */
   cacheMs?: number
 }
@@ -106,12 +106,12 @@ export function entitled(user: string, entitlement: string, opts?: ServerOptions
  * All ACTIVE entitlements for a user. On the public-key (v1) path expiry is
  * enforced here against the current clock, counting a billing grace period as
  * still active. On the secret-key (v2) path RevenueCat's own
- * `active_entitlements` endpoint decides activity — but a "nothing active"
+ * `active_entitlements` endpoint decides activity - but a "nothing active"
  * answer for a customer it knows is confirmed against v1 before being
  * reported, so the two paths cannot disagree against a paying customer (see
  * `confirmDenials`).
  *
- * Resolves an **ARRAY** of `{ id, expires }` — not a keyed object. Calling
+ * Resolves an **ARRAY** of `{ id, expires }` - not a keyed object. Calling
  * `Object.keys()` on it yields positions (`["0","1"]`), which fails quietly
  * because array indices are valid strings: the response looks structurally
  * fine while carrying positions where entitlement ids should be. If you only

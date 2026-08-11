@@ -4,8 +4,8 @@
 //
 // Why this exists: the rest of the suite simulates RevenueCat, so it proves the
 // package does what we believe the API does and can never notice the API
-// changing. Two behaviours it depends on — the X-Is-Sandbox header and v2's
-// active_entitlements — are undocumented. Without this job, a silent change to
+// changing. Two behaviours it depends on - the X-Is-Sandbox header and v2's
+// active_entitlements - are undocumented. Without this job, a silent change to
 // either surfaces as a customer support ticket. With it, it is a red build.
 //
 // This makes no purchases and writes nothing. It reads fixed customers that
@@ -46,12 +46,12 @@ async function check (label, run, expected) {
 async function main () {
   console.log('base44-revenuecat live canary')
 
-  // A repo without the secrets (a fork, a fresh clone) is not broken — it is
+  // A repo without the secrets (a fork, a fresh clone) is not broken - it is
   // unconfigured. Say so and succeed rather than reporting a false red.
   const required = ['key', 'entitlement', 'entitledId', 'deniedId']
   const missing = required.filter((k) => !CFG[k])
   if (missing.length) {
-    console.log('\nnot configured — skipping. Missing: ' + missing.join(', '))
+    console.log('\nnot configured - skipping. Missing: ' + missing.join(', '))
     console.log('See .github/workflows/canary.yml for the one-time setup.')
     return
   }
@@ -77,7 +77,7 @@ async function main () {
   if (CFG.secret && CFG.project) {
     console.log('\nsecret key (v2):')
     // FIRST: prove the v2 path is actually reachable. server.cjs deliberately
-    // falls back to v1 on a v2 401/403/404 and remembers it — and v1 accepts
+    // falls back to v1 on a v2 401/403/404 and remembers it - and v1 accepts
     // sk_ keys, so every assertion below would answer correctly VIA V1 and the
     // canary would pass green for the exact drift it exists to catch. Ask v2
     // directly, outside the helpers, so a revoked or renamed v2 is a failure
@@ -96,7 +96,7 @@ async function main () {
       } else {
         const body = await res.json()
         if (!body || !Object.prototype.hasOwnProperty.call(body, 'active_entitlements')) {
-          failures.push('v2 customer response no longer carries active_entitlements — the field this package reads.')
+          failures.push('v2 customer response no longer carries active_entitlements - the field this package reads.')
           console.log('  FAIL v2 response shape changed (no active_entitlements)')
         } else {
           console.log('  ok   v2 is reachable and still returns active_entitlements')
@@ -118,7 +118,7 @@ async function main () {
 
     // THE ONE THAT MATTERS MOST. The two paths must agree about a paying
     // customer. If v2's undocumented rules drift, this is where it shows up
-    // first — and the confirmation added in 1.6.1 is what keeps it true.
+    // first - and the confirmation added in 1.6.1 is what keeps it true.
     try {
       const viaV1 = (await entitlements(CFG.entitledId, { key: CFG.key })).map((e) => e.id).sort()
       const viaV2 = (await entitlements(CFG.entitledId, { secret: CFG.secret, project: CFG.project })).map((e) => e.id).sort()
@@ -173,18 +173,18 @@ async function main () {
       true
     )
   } else {
-    notes.push('cross-store check skipped (RC_CANARY_CROSS_STORE_ID unset) — the "either key verifies both stores" claim is documented but unverified')
+    notes.push('cross-store check skipped (RC_CANARY_CROSS_STORE_ID unset) - the "either key verifies both stores" claim is documented but unverified')
   }
 
   console.log('')
   notes.forEach((n) => console.log('note: ' + n))
   if (failures.length) {
-    console.error('\nCANARY FAILED — RevenueCat no longer behaves the way this package assumes:')
+    console.error('\nCANARY FAILED - RevenueCat no longer behaves the way this package assumes:')
     failures.forEach((f) => console.error('  • ' + f))
     console.error('\nThis is not a flaky test. Read the failures above before releasing.')
     // exitCode, not exit(): console writes to a pipe (which is what Actions
     // gives this step) are async, and process.exit() drops whatever has not
-    // flushed — discarding the only output this job produces.
+    // flushed - discarding the only output this job produces.
     process.exitCode = 1
     return
   }

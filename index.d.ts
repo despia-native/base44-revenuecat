@@ -4,14 +4,14 @@
 
 // The package's CommonJS export IS the revenuecat object itself (UMD:
 // module.exports = iap, no .default property), so the declaration uses
-// export= — accurate for require() — while ESM default imports still work
+// export= - accurate for require() - while ESM default imports still work
 // (Node maps a CJS module.exports to the ESM default import).
 
 declare namespace revenuecat {
 
   /**
    * Machine-readable failure reason carried by every envelope. Client calls
-   * never reject — inspect `code` on the resolved value instead:
+   * never reject - inspect `code` on the resolved value instead:
    * - 'web'                    not running inside a Despia app (browser/preview)
    * - 'no_module'              the RevenueCat module is excluded from this build
    * - 'unsupported'            this build does not carry the requested feature
@@ -74,13 +74,13 @@ declare namespace revenuecat {
     /** RevenueCat package identifier, e.g. "$rc_monthly". */
     package: string | null
     packageType: string | null
-    /** Reserved: always empty today — no current build emits a per-product offer list. */
+    /** Reserved: always empty today - no current build emits a per-product offer list. */
     offers?: PlanOffer[]
   }
 
   /** Nested money value, text is ALWAYS the display string, localized by the store. */
   export interface PlanPrice {
-    /** Decimal amount. null = unknown (the legacy V3 channel reports only a display string for intro prices) — render `text`, never assume 0. */
+    /** Decimal amount. null = unknown (the legacy V3 channel reports only a display string for intro prices) - render `text`, never assume 0. */
     value: number | null
     text: string
     currency: string | null
@@ -130,7 +130,7 @@ declare namespace revenuecat {
       period: PlanPeriod | null
       cycles: number
     } | null
-    /** Reserved: always empty today — no current build emits a per-product offer list. */
+    /** Reserved: always empty today - no current build emits a per-product offer list. */
     offers: PlanOffer[]
   }
 
@@ -199,7 +199,7 @@ declare namespace revenuecat {
      * current build reads it: the native purchase action accepts only the
      * product and the user id, so the store applies its DEFAULT offer logic
      * and your targeted price is silently not used. Accepted for forward
-     * compatibility — do not build a discount flow on it.
+     * compatibility - do not build a discount flow on it.
      *
      * To target a price today, target an OFFERING instead: build one in
      * RevenueCat and present it with `paywall('winback')` / `plans('winback')`.
@@ -329,7 +329,7 @@ declare namespace revenuecat {
      * Who does RevenueCat think this device is, right now?
      *
      * Same answer as `user()` with no arguments, named for the question, plus
-     * a `source` telling you where it came from — so "we could not ask" is
+     * a `source` telling you where it came from - so "we could not ask" is
      * never mistaken for "the user is anonymous".
      *
      * Reads the NATIVE SDK's opinion rather than this package's local state,
@@ -385,12 +385,12 @@ declare namespace revenuecat {
 
     /**
      * Subscribe to native events. Returns an unsubscribe function that also
-     * releases this package's bookkeeping for the listener — call it (or use
+     * releases this package's bookkeeping for the listener - call it (or use
      * off()) when a component unmounts.
      * @example const stop = revenuecat.on('purchase', refreshAccess); // later: stop()
      */
     on(event: 'result', fn: (result: Result) => void): () => void
-    /** 'purchase' fires when the store confirms a transaction / customer info changes; the payload is the native customer-info envelope (shape varies by build — treat as advisory and re-read status()). */
+    /** 'purchase' fires when the store confirms a transaction / customer info changes; the payload is the native customer-info envelope (shape varies by build - treat as advisory and re-read status()). */
     on(event: 'purchase', fn: (customerInfo: unknown) => void): () => void
     on(event: 'center', fn: (event: { event: string, [key: string]: unknown }) => void): () => void
     on(event: 'user', fn: (env: { ok: boolean, user: string | null, anonymous: boolean, registered?: boolean, bridge?: number, new?: boolean, entitlements?: { active: string[], all: string[] }, [key: string]: unknown }) => void): () => void

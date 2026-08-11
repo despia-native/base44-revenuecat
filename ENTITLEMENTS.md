@@ -160,7 +160,7 @@ They do not interact.
 
 ### "But I was told to create a placeholder entitlement for consumables"
 
-You will find advice — including in some RevenueCat setup walkthroughs — that every product needs
+You will find advice - including in some RevenueCat setup walkthroughs - that every product needs
 an entitlement, so consumables should get a placeholder one. That advice exists because parts of
 the RevenueCat dashboard are organized around entitlements, not because a consumable needs one to
 be purchasable. **It does not.** A consumable sells, charges, and returns a completed transaction
@@ -169,7 +169,7 @@ with no entitlement attached, which is what the code above relies on.
 This guide's position, stated once so the rest of the docs can point at it:
 
 > **Do not attach a consumable to an entitlement.** If some other tool in your stack requires every
-> product to carry one, create the placeholder — but **never gate on it**. Use `result.ok` from the
+> product to carry one, create the placeholder - but **never gate on it**. Use `result.ok` from the
 > purchase and your own balance, never `has()`.
 
 The reason is the one above: an entitlement with no expiration date is a lifetime grant, so the
@@ -280,7 +280,7 @@ request arrives:
 import { entitled } from 'npm:base44-revenuecat/server'
 
 // Your PUBLIC SDK key (appl_… / goog_…) from Despia → Integrations →
-// RevenueCat. Configure it here, server-side — never read it from the request.
+// RevenueCat. Configure it here, server-side - never read it from the request.
 // Either platform's key works and one is enough: the check reads your project,
 // not a store, so an appl_ key also verifies Google Play subscribers.
 const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
@@ -302,7 +302,7 @@ device can see is invisible to the server check.
 Same entitlement id, same string, asked of RevenueCat directly. No webhooks and no subscriptions
 table to keep in sync. The user id must be **identical** to the one you passed to
 `revenuecat.user(id)`, or the server will look up a different customer and correctly say no. The
-server helpers throw on network/API failures (unlike the client, which never throws) — always wrap
+server helpers throw on network/API failures (unlike the client, which never throws) - always wrap
 them in try/catch and deny on error. The README's
 [server section](README.md#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets)
 covers the secret-key upgrade and every configuration option.
@@ -357,7 +357,7 @@ Sandbox purchases are free and appear in the dashboard within seconds.
 4. You bought a consumable, which grants no entitlement by design. Check `result.ok` instead.
 5. The check never ran: the request had no signed-in session, so `base44.auth.me()` threw and the
    function answered a generic 500 (`"Authentication required to view users"`) before reading any
-   entitlement. That is an authentication bug, not a purchase one — catch it and answer 401.
+   entitlement. That is an authentication bug, not a purchase one - catch it and answer 401.
 5. You never called `revenuecat.user(id)`, so the purchase landed on a different customer.
 
 `revenuecat.status()` shows the ids the device actually sees, which separates these in one call.
@@ -373,7 +373,7 @@ a billing retry. See [the lifecycle table](#read-the-lifecycle-not-just-the-onof
 
 **Attaching consumables to an entitlement.** Grants permanent access on the first coin pack. Track
 balances in your own data. If something in your stack forces you to create one anyway, never gate
-on it — see [the placeholder note](#but-i-was-told-to-create-a-placeholder-entitlement-for-consumables).
+on it - see [the placeholder note](#but-i-was-told-to-create-a-placeholder-entitlement-for-consumables).
 
 **Mismatched user ids between app and server.** The most common cause of "client says yes, server
 says no." Log `revenuecat.id` in the app and `user.id` in the function and compare them as strings.

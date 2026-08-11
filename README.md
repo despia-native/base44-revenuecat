@@ -27,11 +27,11 @@ if (await revenuecat.has('premium')) unlockPremium()   // client-side entitlemen
 
 > **`premium` is a placeholder for your own entitlement id, not a built-in.** RevenueCat ships no default entitlements, so nothing called `premium` exists until you create it yourself in the RevenueCat dashboard (Product catalog → Entitlements) and attach your App Store and Play Store products to it. Use **your** id everywhere this README writes `premium`. Until that entitlement exists and has products attached, `has('premium')` stays false for every user forever, including immediately after a real purchase that Apple or Google actually charged for. New to this? Read **[the entitlements guide](ENTITLEMENTS.md)** first: what they are, how to create one, how to attach subscriptions and one-time purchases, and why credit packs work differently.
 
-Every **client** call returns a promise and **never throws**. In the Base44 browser preview each method resolves a safe empty result, so you can build and preview your paywall logic on the web and it simply comes alive inside the installed app. (The [server helpers](#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets) are the one deliberate exception: they throw on failure so your backend fails closed — see [Error handling](#error-handling).)
+Every **client** call returns a promise and **never throws**. In the Base44 browser preview each method resolves a safe empty result, so you can build and preview your paywall logic on the web and it simply comes alive inside the installed app. (The [server helpers](#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets) are the one deliberate exception: they throw on failure so your backend fails closed - see [Error handling](#error-handling).)
 
 **Requirements:** the client runs anywhere Base44 runs (it's dependency-free UMD). The `/server` entry needs a runtime with global `fetch`: Base44 backend functions (Deno) work as-is, Node needs **Node 18+**.
 
-> **Use 1.6.1 or newer — earlier versions have money-affecting bugs.** On **1.6.0 and below**, `plans()` mixed products from every offering, so a promotional price could be rendered while the full price was charged, and a short plan id could be repointed between render and purchase. On **1.5.x and below**, a subscriber could read as *not* entitled on paths where an empty answer outranked a truer one. Both classes are silent: they do not throw, and they do not reproduce in your own account. `npm install base44-revenuecat@latest`.
+> **Use 1.6.1 or newer - earlier versions have money-affecting bugs.** On **1.6.0 and below**, `plans()` mixed products from every offering, so a promotional price could be rendered while the full price was charged, and a short plan id could be repointed between render and purchase. On **1.5.x and below**, a subscriber could read as *not* entitled on paths where an empty answer outranked a truer one. Both classes are silent: they do not throw, and they do not reproduce in your own account. `npm install base44-revenuecat@latest`.
 
 ---
 
@@ -51,12 +51,12 @@ You do **not** need webhooks, a subscriptions table, or native code. The two que
 ### Part 1: RevenueCat
 
 1. Create a free account at [app.revenuecat.com](https://app.revenuecat.com) (free until well past your first revenue).
-2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key. *Shipping Android only? Skip this step — see [Which key goes where](#which-key-goes-where).*
+2. **Project settings → Apps → + New → App Store**: enter your iOS bundle id, upload an App Store Connect API key (App Manager role) and an In-App Purchase key. *Shipping Android only? Skip this step - see [Which key goes where](#which-key-goes-where).*
 3. **Project settings → Apps → + New → Play Store**: enter the same package name and upload your Google Play service-account JSON. *Shipping iOS only? Skip this step.*
-4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching subscriptions, tiers and lifetime unlocks is covered in [the entitlements guide](ENTITLEMENTS.md) — as is why **consumable credit packs are the one thing you do not attach to an entitlement**.
+4. **Product catalog → Entitlements → + New**: create one entitlement per thing you unlock, e.g. `premium`. Attach your App Store and Play Store products to it (both stores → one entitlement id, so your app code never branches per platform). **The id you type here is the literal string you pass to `has()` and `entitled()` later**, so choose it deliberately and copy it exactly. `premium` is only this README's example, and an entitlement you never created can never turn true. Attaching subscriptions, tiers and lifetime unlocks is covered in [the entitlements guide](ENTITLEMENTS.md) - as is why **consumable credit packs are the one thing you do not attach to an entitlement**.
 5. **Product catalog → Offerings**: group products into an offering (the `default` offering is what paywalls show), e.g. a monthly and an annual package.
 6. Optional but recommended: design your paywall in **Paywalls**. `revenuecat.paywall()` presents it natively, priced in each user's own currency, and you can restyle it from the dashboard without an app update.
-7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL). A platform's key only exists once you have added that platform's app in step 2 or 3 — if you see no `goog_…`, the Play Store app has not been added yet.
+7. **Project settings → API keys**: copy the **iOS public SDK key** (`appl_…`), the **Android public SDK key** (`goog_…`), and note your **project id** (`proj…`, shown in Project settings / the dashboard URL). A platform's key only exists once you have added that platform's app in step 2 or 3 - if you see no `goog_…`, the Play Store app has not been added yet.
 
 ### Part 2: Despia (the only step that touches your app)
 
@@ -74,16 +74,16 @@ That's the entire native setup. Everything else is the JavaScript below, written
 
 ### Which key goes where
 
-RevenueCat gives you several keys and it is not obvious which one belongs where. There are only **two slots**, and they follow **opposite rules** — this is the single most common setup mix-up:
+RevenueCat gives you several keys and it is not obvious which one belongs where. There are only **two slots**, and they follow **opposite rules** - this is the single most common setup mix-up:
 
 | Slot | Which key | Does an Apple key work for Android? |
 |---|---|---|
-| **In the app** (Despia integration fields) | must **match the platform** — one field per platform | **No, never** |
+| **In the app** (Despia integration fields) | must **match the platform** - one field per platform | **No, never** |
 | **On your server** (the `entitled()` check) | **any one key** from the project | **Yes** |
 
-**In the app, the key starts the store connection.** An Android build talks to Google Play, and Google Play only accepts a `goog_…` key. Give an Android build an `appl_…` key and RevenueCat never starts: no paywall, no products, no purchases. That is why Despia has two separate fields rather than one — a build takes its own platform's key and ignores the other.
+**In the app, the key starts the store connection.** An Android build talks to Google Play, and Google Play only accepts a `goog_…` key. Give an Android build an `appl_…` key and RevenueCat never starts: no paywall, no products, no purchases. That is why Despia has two separate fields rather than one - a build takes its own platform's key and ignores the other.
 
-**On the server, the key is only a password to read your project.** It talks to no store. Entitlements are stored per *customer* per *project*, not per platform, so any key opens the same door — and it works in both directions. An `appl_…` key correctly reports a Google Play subscriber as entitled, and a `goog_…` key correctly reports an App Store subscriber as entitled. You need **one** key server-side, not one per platform, and no code in this package branches on platform.
+**On the server, the key is only a password to read your project.** It talks to no store. Entitlements are stored per *customer* per *project*, not per platform, so any key opens the same door - and it works in both directions. An `appl_…` key correctly reports a Google Play subscriber as entitled, and a `goog_…` key correctly reports an App Store subscriber as entitled. You need **one** key server-side, not one per platform, and no code in this package branches on platform.
 
 **Shipping only one platform?** Everything still applies, minus the half you don't use. Add only that platform's app in RevenueCat, fill only that field in Despia, leave the other empty, and use that same key on the server:
 
@@ -94,17 +94,17 @@ RevenueCat gives you several keys and it is not obvious which one belongs where.
 | Key you'll have | `appl_…` | `goog_…` |
 | Server key to use | that same `appl_…` | that same `goog_…` |
 
-**Reading a key at a glance** — the prefix tells you exactly what it is:
+**Reading a key at a glance** - the prefix tells you exactly what it is:
 
 | Prefix | What it is | Safe in client code? |
 |---|---|---|
-| `appl_…` | iOS / App Store **public** SDK key | Yes — it ships inside your app binary |
-| `goog_…` | Android / Play Store **public** SDK key | Yes — same |
-| `sk_…` | **Secret** server-side key, project-wide | **No** — server only, keep it in Base44 secrets |
+| `appl_…` | iOS / App Store **public** SDK key | Yes - it ships inside your app binary |
+| `goog_…` | Android / Play Store **public** SDK key | Yes - same |
+| `sk_…` | **Secret** server-side key, project-wide | **No** - server only, keep it in Base44 secrets |
 
 The two public keys are safe to paste into a dashboard or commit in a backend function. An `sk_…` key is not: it can read and modify your whole project, so it belongs in secrets and never in client code.
 
-One genuine platform difference exists in the API itself: `revenuecat.redeem()` (Apple offer codes) returns `{ supported: false, code: 'unsupported' }` on Android, because Google Play has no in-app redemption sheet. Everything else — `purchase()`, `has()`, `paywall()`, `offerings()`, `restore()`, `customerCenter()` — behaves identically on both platforms.
+One genuine platform difference exists in the API itself: `revenuecat.redeem()` (Apple offer codes) returns `{ supported: false, code: 'unsupported' }` on Android, because Google Play has no in-app redemption sheet. Everything else - `purchase()`, `has()`, `paywall()`, `offerings()`, `restore()`, `customerCenter()` - behaves identically on both platforms.
 
 ---
 
@@ -163,13 +163,13 @@ const me = await revenuecat.whoami()
 
 Answers the question `user(id)` never tells you: **who does RevenueCat
 currently think this device is?** It reads the native SDK's own opinion, not
-this package's local state — which is the distinction that matters, because the
+this package's local state - which is the distinction that matters, because the
 RevenueCat SDK persists its identity across app restarts. A device can already
 be signed in as someone before your JavaScript has said a word.
 
 | Field | Meaning |
 |---|---|
-| `id` | The customer id RevenueCat is using — either yours, or one it minted (`$RCAnonymousID:…`) |
+| `id` | The customer id RevenueCat is using - either yours, or one it minted (`$RCAnonymousID:…`) |
 | `user` | The id **you** supplied via `user(id)`, or `null` if none |
 | `anonymous` | `true` when purchases attach to the **device**, not to an account |
 | `registered` | `true` when an id you supplied is in force |
@@ -198,7 +198,7 @@ const after = await revenuecat.whoami()   // confirm it landed, don't assume
 
 | Situation | What happens | What you do |
 |---|---|---|
-| Anonymous device buys, then signs in | `user(id)` calls the native login and **merges** the anonymous history into the account | Nothing extra — but `whoami()` afterwards to confirm |
+| Anonymous device buys, then signs in | `user(id)` calls the native login and **merges** the anonymous history into the account | Nothing extra - but `whoami()` afterwards to confirm |
 | Account switch on a shared device (`user_123` → `user_234`) | The cached catalog is dropped, so targeted offerings can never price one account off another's catalog | Re-read `plans()` after switching |
 | Signed-in user signs out | `logout()` rotates the SDK to a **fresh** anonymous customer, so the next person on the device does not inherit access | Gate on your own auth state too |
 | Same person, two devices | Both resolve to the same customer once `user(id)` names them | Always call `user(id)` at sign-in, on every device |
@@ -255,7 +255,7 @@ Each plan is the same JSON on iOS and Android:
 }
 ```
 
-`price.text` is **always** the value to display. Never construct a currency string yourself, and never hardcode a price. On legacy classic-runtime builds an intro offer's numeric `price.value` can be `null` (the channel only reports the display string) — render `price.text` and never treat null as 0.
+`price.text` is **always** the value to display. Never construct a currency string yourself, and never hardcode a price. On legacy classic-runtime builds an intro offer's numeric `price.value` can be `null` (the channel only reports the display string) - render `price.text` and never treat null as 0.
 
 Two fields are reserved for native work that has not shipped yet, so don't branch on them:
 
@@ -295,11 +295,11 @@ const monthly  = await revenuecat.products('default') // or just one offering
 
 This is how you build a **custom paywall in Base44** with real store prices. Map over `products`, render `priceString`, and call `buy(id)` on tap. Never hardcode a price: the store localizes it per country.
 
-**About product ids:** the two stores write subscription ids differently — iOS as one App Store product id, Android as `subscriptionId:basePlanId`. So the same "premium monthly" can appear as `premium_monthly` on an iOS device and `premium:monthly` on Android. Never compare against a hardcoded product id in app logic; gate on entitlement ids (`has('premium')`), which are identical on both platforms.
+**About product ids:** the two stores write subscription ids differently - iOS as one App Store product id, Android as `subscriptionId:basePlanId`. So the same "premium monthly" can appear as `premium_monthly` on an iOS device and `premium:monthly` on Android. Never compare against a hardcoded product id in app logic; gate on entitlement ids (`has('premium')`), which are identical on both platforms.
 
 ### `revenuecat.offers(offering?)`: the full catalog envelope
 
-`revenuecat.offers()` returns the raw structure behind `plans()`/`products()` — `{ ok, current, offerings: [{ id, current, packages }], products, error, code }` — when you need offering and package placement rather than a flat list.
+`revenuecat.offers()` returns the raw structure behind `plans()`/`products()` - `{ ok, current, offerings: [{ id, current, packages }], products, error, code }` - when you need offering and package placement rather than a flat list.
 
 ### `revenuecat.buy(id)`: direct purchase
 
@@ -357,9 +357,9 @@ if (info.entitlements.premium?.unsubscribed) {
 
 `info().entitlements.<id>.unsubscribed` marks exactly the window worth targeting: cancelled, but still inside the paid period. Offering-based targeting works on both platforms today.
 
-> **`buy(id, { offer })` is not implemented natively yet.** The package forwards the offer id, but no current build reads it: the native purchase action accepts only the product and the user id, so the store applies its default offer logic and your targeted price is silently *not* used. The option is accepted for forward compatibility, not because it works — don't build a discount flow on it. Use an offering, as above.
+> **`buy(id, { offer })` is not implemented natively yet.** The package forwards the offer id, but no current build reads it: the native purchase action accepts only the product and the user id, so the store applies its default offer logic and your targeted price is silently *not* used. The option is accepted for forward compatibility, not because it works - don't build a discount flow on it. Use an offering, as above.
 
-> **A misspelled offering id is refused, not silently widened.** `paywall('winbak')` resolves `{ ok: false, code: 'offeringNotFoundError' }` without presenting anything, rather than showing your **default** offering's full price where you meant a discount. The native layer itself does fall back, so the package checks the offering against the catalog before presenting — from an already-rendered catalog when there is one, so the common path costs no extra request. `plans(id)` and `offers(id)` answer the same `offeringNotFoundError`, so all three refuse the same inputs. Two consequences worth knowing: a build whose catalog read has degraded to a flat product list cannot name offerings at all, so a *named* offering is refused there (the bare `paywall()` is unaffected), and if the catalog read itself throws, the paywall is presented anyway — a flaky read must not cost every sale.
+> **A misspelled offering id is refused, not silently widened.** `paywall('winbak')` resolves `{ ok: false, code: 'offeringNotFoundError' }` without presenting anything, rather than showing your **default** offering's full price where you meant a discount. The native layer itself does fall back, so the package checks the offering against the catalog before presenting - from an already-rendered catalog when there is one, so the common path costs no extra request. `plans(id)` and `offers(id)` answer the same `offeringNotFoundError`, so all three refuse the same inputs. Two consequences worth knowing: a build whose catalog read has degraded to a flat product list cannot name offerings at all, so a *named* offering is refused there (the bare `paywall()` is unaffected), and if the catalog read itself throws, the paywall is presented anyway - a flaky read must not cost every sale.
 
 Tag manual-only Google offers `rc-ignore-offer` in RevenueCat so automatic selection never turns your win-back price into the acquisition price. This matters *more* while explicit-offer purchase is unimplemented: the tag is the only thing keeping a retention price out of the default selection. And if you use `revenuecat.paywall()`, RevenueCat Paywalls render configured trials, intro offers, and promotional offers for you, with no offer code at all.
 
@@ -370,7 +370,7 @@ Apple's redeemable subscription codes for marketing campaigns:
 ```javascript
 const r = await revenuecat.redeem()   // opens Apple's redemption sheet on iOS
 // r.supported === false on Android (Play codes are redeemed in the Play Store app)
-// and on builds that predate the redeem bridge — always render your redeem
+// and on builds that predate the redeem bridge - always render your redeem
 // button conditionally on r.supported
 ```
 
@@ -411,7 +411,7 @@ const s = await revenuecat.status()
 
 ### `revenuecat.info()`: per-entitlement lifecycle for account screens
 
-The same snapshot as `status()`, plus a normalized per-entitlement detail map — the right read for "Manage subscription" screens and win-back logic:
+The same snapshot as `status()`, plus a normalized per-entitlement detail map - the right read for "Manage subscription" screens and win-back logic:
 
 ```javascript
 const info = await revenuecat.info()
@@ -510,14 +510,14 @@ import { entitled } from 'npm:base44-revenuecat/server'
 // EITHER platform's key works here, and you only need one. The server reads
 // your project, not a store: an appl_ key verifies Google Play subscribers and
 // a goog_ key verifies App Store subscribers. Use whichever you have.
-// (In the app it's the opposite — the key must match the platform. See
+// (In the app it's the opposite - the key must match the platform. See
 // "Which key goes where" above.)
 const RC_KEY = 'appl_XXXXXXXXXXXX'   // or 'goog_XXXXXXXXXXXX'
 
 export default async function (req) {
   const base44 = createClientFromRequest(req)
 
-  // auth.me() THROWS when the request carries no signed-in session — it does
+  // auth.me() THROWS when the request carries no signed-in session - it does
   // not return null. Left uncaught it becomes a 500 reading "Authentication
   // required to view users", which looks like a purchase bug and is not one.
   let user
@@ -531,7 +531,7 @@ export default async function (req) {
   try {
     ok = await entitled(user.id, 'premium', { key: RC_KEY })
   } catch (e) {
-    // RevenueCat unreachable / rate limited: fail CLOSED — deny the paid
+    // RevenueCat unreachable / rate limited: fail CLOSED - deny the paid
     // action rather than giving it away. See "Error handling" below.
     return Response.json({ error: 'verification unavailable, retry shortly' }, { status: 503 })
   }
@@ -542,19 +542,19 @@ export default async function (req) {
 ```
 
 **Three different denials, three different codes.** They all withhold the paid
-action, but they mean different things to your app and to your metrics — collapse
+action, but they mean different things to your app and to your metrics - collapse
 them and every one of these looks like "the purchase is broken":
 
 | Code | Means | What the app should do |
 |---|---|---|
 | **401** | Nobody is signed in | Send them to sign-in. There is no user to verify yet. |
 | **402** | Signed in, not subscribed | Show the paywall. This is the normal upsell path. |
-| **503** | Cannot verify right now | Ask them to retry. **Never** show a paywall — a paying subscriber must not be asked to buy again because RevenueCat was briefly unreachable. |
+| **503** | Cannot verify right now | Ask them to retry. **Never** show a paywall - a paying subscriber must not be asked to buy again because RevenueCat was briefly unreachable. |
 
 The 401 case is the one people hit first, because a store or pricing page is
 often reachable before sign-in. Server-side verification is per-user by
-design: it looks up entitlements for the authenticated user's id — the same id
-the app binds with `revenuecat.user(id)` — so an anonymous request has nothing
+design: it looks up entitlements for the authenticated user's id - the same id
+the app binds with `revenuecat.user(id)` - so an anonymous request has nothing
 to check. Either gate the page behind sign-in, or handle the 401 by prompting
 for it.
 
@@ -566,7 +566,7 @@ const { data } = await base44.functions.invoke('premium', {})
 
 Because the frontend used `revenuecat.user(user.id)` and the function uses `base44.auth.me().id`, both sides always name the **same RevenueCat customer**. That is the number-one integration mistake, eliminated.
 
-**One side effect to know about:** RevenueCat's v1 subscriber endpoint is *create-on-read* — checking an id RevenueCat has never seen creates that customer (the API answers 200 or 201). The check itself stays correct (a just-created customer has no entitlements, so gates deny), but every distinct user id you verify will appear in your RevenueCat customer list, including users who never opened the mobile app. That's cosmetic for most apps; if you'd rather avoid it, only call `entitled()` for users who have actually been through the app's paywall, or use the secret-key path below.
+**One side effect to know about:** RevenueCat's v1 subscriber endpoint is *create-on-read* - checking an id RevenueCat has never seen creates that customer (the API answers 200 or 201). The check itself stays correct (a just-created customer has no entitlements, so gates deny), but every distinct user id you verify will appear in your RevenueCat customer list, including users who never opened the mobile app. That's cosmetic for most apps; if you'd rather avoid it, only call `entitled()` for users who have actually been through the app's paywall, or use the secret-key path below.
 
 **Optional upgrade (secret key):** pass `{ secret: secrets.get('RC_SECRET'), project: secrets.get('RC_PROJECT') }` (a `sk_…` key from RevenueCat → API keys, stored in Base44 secrets) to ride RevenueCat's v2 API with project scoping and documented rate limits (480 customer-info requests/min per key; v1 publishes no figure). The v2 customer read does not create customers. Entitlements are matched by their human lookup key (`premium`) on both paths, and if v2 rejects the key or project (401/403/404) the check falls back to v1 automatically and remembers the verdict.
 
@@ -578,7 +578,7 @@ numbers rather than "higher limits":
 
 | Path | Published limit |
 |---|---|
-| v2 (`sk_…` secret key) | **480 customer-info requests/minute per key** — roughly 8/second |
+| v2 (`sk_…` secret key) | **480 customer-info requests/minute per key** - roughly 8/second |
 | v1 (public `appl_…`/`goog_…` key) | RevenueCat publishes no figure |
 
 Eight requests a second is a real ceiling for a server that checks entitlement
@@ -590,7 +590,7 @@ for customers who have paid.
 Two things keep you under it:
 
 - **Cache positive answers.** `{ cacheMs: 30000 }` serves a grant from memory
-  for 30 seconds. Only grants are cached, never denials — a customer who
+  for 30 seconds. Only grants are cached, never denials - a customer who
   subscribes mid-session is never held behind the TTL, while a cancellation
   costs at most `cacheMs` of extra access. Off by default, because the right
   value depends on how much post-cancellation access you will tolerate.
@@ -603,7 +603,7 @@ Two things keep you under it:
 const ok = await entitled(user.id, 'premium', { key: RC_KEY, cacheMs: 30000 })
 ```
 
-**On retrying a 429:** `entitled()` does **not** retry — deliberately. It
+**On retrying a 429:** `entitled()` does **not** retry - deliberately. It
 surfaces `.status` and `.retryAfter` and lets you decide, because a server-side
 gate is usually inside a request whose own deadline is shorter than the interval
 RevenueCat asks you to wait, and a hidden retry would spend that budget without
@@ -613,12 +613,12 @@ to retrying at all.
 **Configuration details** (all three functions accept the same options):
 
 - Resolution order: explicit `{ key | secret | project }` → env `RC_KEY` / `RC_SECRET` / `RC_PROJECT` → env `REVENUECAT_PUBLIC_KEY` / `REVENUECAT_SECRET_KEY` / `REVENUECAT_PROJECT_ID`.
-- `secret` wins over `key` when both are set. Which API path runs is decided by the key's own prefix — only `sk_…` keys ever use v2; an `sk_…` key placed in `RC_KEY` still unlocks v2, and a public key in `RC_SECRET` still works on v1.
+- `secret` wins over `key` when both are set. Which API path runs is decided by the key's own prefix - only `sk_…` keys ever use v2; an `sk_…` key placed in `RC_KEY` still unlocks v2, and a public key in `RC_SECRET` still works on v1.
 - `{ timeout: ms }` bounds each RevenueCat request (default 10 s); a hung connection aborts and throws instead of hanging your function.
-- `{ cacheMs: 30000 }` caches a positive answer for that long (off by default). Grants only — never denials, so a customer who just subscribed is never held behind the TTL. See [Rate limits](#rate-limits-and-sizing-a-launch).
-- `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases — required while testing, see [Testing](#testing). Off in production. A sandbox check always uses RevenueCat's v1 API even if you configured a secret key and project id: `X-Is-Sandbox` is a v1 header and v2 has no documented sandbox support, so routing a tester through v2 would deny every sandbox purchase. Production checks are unaffected.
-- **A v2 "not entitled" is double-checked.** On the secret-key path, RevenueCat's `active_entitlements` decides who is active — but its rules for grace periods and other still-granting states aren't documented, and it has been seen returning nothing for a customer v1 reports as entitled. So when v2 lists nothing for a customer it knows, the check confirms against v1 before denying. Granting wrongly costs a little revenue; denying a paying customer costs the customer. That's one extra request **only** on the about-to-deny path — a positive answer and an unknown customer both cost nothing extra. Pass `{ confirmDenials: false }` to take v2 at its word if your traffic is mostly never-subscribed users.
-- **Errors carry detail.** The thrown `Error` has `.status` (the HTTP status), and on a `429` also `.retryAfter` in seconds when RevenueCat sends a `Retry-After` header — so you can back off for the interval the API actually asked for:
+- `{ cacheMs: 30000 }` caches a positive answer for that long (off by default). Grants only - never denials, so a customer who just subscribed is never held behind the TTL. See [Rate limits](#rate-limits-and-sizing-a-launch).
+- `{ sandbox: true }` (or env `RC_SANDBOX=true`) includes sandbox purchases - required while testing, see [Testing](#testing). Off in production. A sandbox check always uses RevenueCat's v1 API even if you configured a secret key and project id: `X-Is-Sandbox` is a v1 header and v2 has no documented sandbox support, so routing a tester through v2 would deny every sandbox purchase. Production checks are unaffected.
+- **A v2 "not entitled" is double-checked.** On the secret-key path, RevenueCat's `active_entitlements` decides who is active - but its rules for grace periods and other still-granting states aren't documented, and it has been seen returning nothing for a customer v1 reports as entitled. So when v2 lists nothing for a customer it knows, the check confirms against v1 before denying. Granting wrongly costs a little revenue; denying a paying customer costs the customer. That's one extra request **only** on the about-to-deny path - a positive answer and an unknown customer both cost nothing extra. Pass `{ confirmDenials: false }` to take v2 at its word if your traffic is mostly never-subscribed users.
+- **Errors carry detail.** The thrown `Error` has `.status` (the HTTP status), and on a `429` also `.retryAfter` in seconds when RevenueCat sends a `Retry-After` header - so you can back off for the interval the API actually asked for:
 
 ```javascript
 try {
@@ -656,7 +656,7 @@ await customer('user_123', { key: RC_KEY })
 > This is the mistake worth naming, because it fails *quietly*: array indices are
 > valid strings, so the response looks structurally fine and ships a list of
 > positions where entitlement ids should be. If you ever see `"0"`, `"1"` in an
-> entitlement list, this is why — nothing is wrong with your RevenueCat setup.
+> entitlement list, this is why - nothing is wrong with your RevenueCat setup.
 >
 > ```javascript
 > const active = await entitlements(user.id, { key: RC_KEY })
@@ -674,7 +674,7 @@ await customer('user_123', { key: RC_KEY })
 > ```
 > Reach for `entitlements()` only when you need the expiry dates or the full list.
 
-`customer()` is the one shape this package does **not** normalize — it is
+`customer()` is the one shape this package does **not** normalize - it is
 RevenueCat's raw v1 subscriber object, passed through deliberately so you can
 read fields this package does not model. Its `entitlements` field *is* a keyed
 object (RevenueCat's own shape), which is exactly why the two are easy to
@@ -700,7 +700,7 @@ different shapes, on purpose.
 
 Native layers may surface additional store-specific codes verbatim. Branch on `result.cancelled` first (not an error to show anyone), then show `result.error` for the rest.
 
-**Server (`base44-revenuecat/server`): throws, on purpose.** `entitled()`, `entitlements()`, and `customer()` throw when no API key is configured, when RevenueCat answers non-2xx (including `429` rate limits — the thrown error has a `.status`), and on network failures or timeouts. Always wrap them in `try/catch` and **fail closed**: deny the paid action on error, as in the example above. Silent `false` would be indistinguishable from "not subscribed"; a thrown error tells you verification itself failed.
+**Server (`base44-revenuecat/server`): throws, on purpose.** `entitled()`, `entitlements()`, and `customer()` throw when no API key is configured, when RevenueCat answers non-2xx (including `429` rate limits - the thrown error has a `.status`), and on network failures or timeouts. Always wrap them in `try/catch` and **fail closed**: deny the paid action on error, as in the example above. Silent `false` would be indistinguishable from "not subscribed"; a thrown error tells you verification itself failed.
 
 ### What about cancellations?
 
@@ -762,7 +762,7 @@ const ok = await entitled(user.id, 'premium', { key: RC_KEY, sandbox: testing })
 ## Versioning policy
 
 `base44-revenuecat` follows [semantic versioning](https://semver.org/). The
-history moves fast — 1.4.2 to 1.6.1 inside a week — so here is what a bump
+history moves fast - 1.4.2 to 1.6.1 inside a week - so here is what a bump
 actually means for you, because "it's semver" does not tell you whether an
 upgrade is safe:
 
@@ -786,7 +786,7 @@ Three commitments that hold across every version inside a major:
   is enough.
 
 The one thing a patch release deliberately *does* change is behaviour that was
-wrong about money — a paying customer who read as not entitled, or a price that
+wrong about money - a paying customer who read as not entitled, or a price that
 was rendered from one product and charged from another. Those are shipped as
 patches on purpose: leaving them behind a major version would mean the safest
 upgrade path is the one that keeps the bug.
@@ -795,12 +795,12 @@ upgrade path is the one that keeps the bug.
 
 - **`products()` returns `[]` in the installed app** → the build predates the RevenueCat integration or the keys were added after the last build: check Despia → Integrations → RevenueCat, then rebuild. Also confirm your products are attached to an offering in RevenueCat.
 - **`has('premium')` is false right after buying** → in order of likelihood: (a) you copied `premium` out of these docs and no entitlement with that id exists in your RevenueCat dashboard, so it can never be true. Use your own id. (b) The entitlement exists but the purchased product is not attached to it (Product catalog → Entitlements). (c) The id differs by case or whitespace: it is matched literally, so `Premium` is not `premium`. (d) You bought a consumable or credit pack, which grants no entitlement by design. Check `result.ok` for those, not `has()`. `status()` shows the ids the device actually sees, which is the fastest way to tell these apart.
-- **A 500 with `"Authentication required to view users"`, or `AxiosError: Request failed with status code 500` from your own function** → this is **not** a RevenueCat or purchase failure. `base44.auth.me()` **throws** when the request carries no signed-in session rather than returning `null`, and an uncaught throw becomes a generic 500. Wrap it and answer `401` instead, as in [the server example](#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets). It shows up first on store, pricing or paywall pages, which are often reachable before sign-in — server verification is per-user, so an anonymous request has no id to check. Either gate the page behind sign-in or handle the 401 by prompting for it. Do not "fix" it by falling back to a client-side `has()` check: that is the gate a tampered client can lie to, which is the reason the server check exists.
+- **A 500 with `"Authentication required to view users"`, or `AxiosError: Request failed with status code 500` from your own function** → this is **not** a RevenueCat or purchase failure. `base44.auth.me()` **throws** when the request carries no signed-in session rather than returning `null`, and an uncaught throw becomes a generic 500. Wrap it and answer `401` instead, as in [the server example](#verify-on-the-server-base44-backend-function-no-webhooks-no-secrets). It shows up first on store, pricing or paywall pages, which are often reachable before sign-in - server verification is per-user, so an anonymous request has no id to check. Either gate the page behind sign-in or handle the 401 by prompting for it. Do not "fix" it by falling back to a client-side `has()` check: that is the gate a tampered client can lie to, which is the reason the server check exists.
 - **Server check says false, client says true** → two causes, in order of likelihood. (a) **You are testing in sandbox.** RevenueCat's API returns production purchases only unless you pass `{ sandbox: true }` (or set `RC_SANDBOX=true`), so a TestFlight or license-tester purchase is invisible to `entitled()` while the device can see it. (b) The ids differ: log `revenuecat.id` in the app and `user.id` in the function, they must be identical strings.
-- **Purchases work on one platform but the other is completely dead** (no paywall, no products, `products()` empty) → that platform's key is missing or holds the wrong platform's key in Despia → Integrations → RevenueCat. In the app a key must **match** its platform: an Android build cannot start with an `appl_…` key, and an iOS build cannot start with a `goog_…` key. Fill the matching field and rebuild. (The server check is the opposite — one key of either platform verifies everyone. See [Which key goes where](#which-key-goes-where).)
+- **Purchases work on one platform but the other is completely dead** (no paywall, no products, `products()` empty) → that platform's key is missing or holds the wrong platform's key in Despia → Integrations → RevenueCat. In the app a key must **match** its platform: an Android build cannot start with an `appl_…` key, and an iOS build cannot start with a `goog_…` key. Fill the matching field and rebuild. (The server check is the opposite - one key of either platform verifies everyone. See [Which key goes where](#which-key-goes-where).)
 - **Nothing happens in the browser** → correct: purchases only exist inside the installed iOS/Android app. Preview logic with `revenuecat.native`.
 - **A `buy()` call seems stuck right after a paywall was shown** → purchase, paywall, and redeem outcomes share one native result channel and are processed in order. If a paywall was presented but the native layer never reported its outcome (e.g. the app was killed mid-sheet), queued purchase calls wait behind it until the paywall wait times out. A fresh app start clears the queue.
-- **`has()` feels slow / you call it on every render** → each `has()`/`status()` call re-asks the native layer (a customer read, plus store history on classic builds). Check once per screen or on the `result`/`purchase` events, keep the boolean in your app state, and re-check after purchases — as in the [complete client pattern](#gate-premium-features-the-complete-client-pattern).
+- **`has()` feels slow / you call it on every render** → each `has()`/`status()` call re-asks the native layer (a customer read, plus store history on classic builds). Check once per screen or on the `result`/`purchase` events, keep the boolean in your app state, and re-check after purchases - as in the [complete client pattern](#gate-premium-features-the-complete-client-pattern).
 - **A logged-out user on a shared device still shows premium** → the native RevenueCat SDK remembers the last identified user across app restarts, and `user()` (no arguments) adopts it. Gate premium UI on your own auth state too: `const premium = user && await revenuecat.has('premium')`, and call `revenuecat.logout()` when your app logs out.
 
 ## FAQ
