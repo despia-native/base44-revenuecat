@@ -10,6 +10,20 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
+## [1.7.1] - 2026-08-11
+
+### Documentation
+
+- Em dashes replaced with hyphens throughout the docs, source comments, type
+  declarations, tests and workflow files (181 replacements). Cosmetic only, no
+  behaviour change and no API change.
+- Checked before replacing that no heading contained one, so every anchor link
+  still resolves, and that none appeared in a thrown error message or an
+  assertion the tests match on. Checked after that no line-initial dash was
+  created, which would have rendered as an accidental markdown bullet. Arrows
+  are left alone: they carry meaning in the runtime ladders and the dashboard
+  navigation paths, and are not dashes.
+
 ## [1.7.0] - 2026-08-11
 
 ### Fixed
