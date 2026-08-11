@@ -43,6 +43,20 @@ export interface ServerOptions {
    * every sandbox purchase. Production checks are unaffected.
    */
   sandbox?: boolean
+  /**
+   * On the secret-key (v2) path, confirm a "no entitlements" answer against
+   * the v1 API before reporting it. Default true.
+   *
+   * v2's rules for grace periods and other still-granting states are
+   * undocumented, and it has been observed returning nothing for a customer
+   * v1 reports as entitled. Granting wrongly costs a little revenue; denying
+   * a paying customer costs the customer — so a denial is verified. This
+   * costs one extra request ONLY when v2 reports nothing for a customer it
+   * knows; a positive answer and an unknown customer both cost nothing extra.
+   * Set false if your traffic is mostly never-subscribed users and you would
+   * rather take v2 at its word.
+   */
+  confirmDenials?: boolean
 }
 
 export interface ActiveEntitlement {
@@ -71,8 +85,10 @@ export function entitled(user: string, entitlement: string, opts?: ServerOptions
  * All ACTIVE entitlements for a user. On the public-key (v1) path expiry is
  * enforced here against the current clock, counting a billing grace period as
  * still active. On the secret-key (v2) path RevenueCat's own
- * `active_entitlements` endpoint decides activity and its answer is taken as
- * authoritative.
+ * `active_entitlements` endpoint decides activity — but a "nothing active"
+ * answer for a customer it knows is confirmed against v1 before being
+ * reported, so the two paths cannot disagree against a paying customer (see
+ * `confirmDenials`).
  *
  * @throws Same conditions as {@link entitled}.
  * @example
@@ -85,7 +101,8 @@ export function entitlements(user: string, opts?: ServerOptions): Promise<Active
  * Raw RevenueCat subscriber snapshot (v1 shape) for advanced use:
  * subscriptions, non_subscriptions, first_seen, management_url, etc.
  * Like every v1 subscriber read, this creates the customer if RevenueCat
- * has never seen the id. Resolves null only for a falsy user id.
+ * has never seen the id. Resolves null for a falsy user id, and also if
+ * RevenueCat answers 200 with no `subscriber` object.
  *
  * @throws Same conditions as {@link entitled}.
  */
