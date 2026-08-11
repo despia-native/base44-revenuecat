@@ -10,6 +10,21 @@ capabilities are probed at runtime, so you never version-match JavaScript
 against a compiled binary. (The `/server` helpers throw by design, so backend
 gates fail closed.)
 
+## [1.6.1] - 2026-08-11
+
+### Fixed
+
+- **Ships the money-critical and server hardening that landed on main after
+  `1.6.0` was published** (PRs #11–#15): `plans()` no longer mixes offerings
+  so a promo price can be shown and a full price charged; catalog cache is
+  scoped so short ids cannot be repointed between render and purchase;
+  server sandbox checks use the v1 path that actually supports
+  `X-Is-Sandbox`; a v2 "nothing active" answer is confirmed against v1 before
+  denying a customer; SSRF pinning, grace-period math, and the CI pack/install
+  gate that let a broken tarball ship are fixed. Full write-up of each item is
+  under the Fixed sections below (changelog on main was updated before this
+  version bump).
+
 ## [1.6.0] - 2026-08-10
 
 ### Fixed
