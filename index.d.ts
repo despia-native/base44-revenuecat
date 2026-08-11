@@ -74,7 +74,7 @@ declare namespace revenuecat {
     /** RevenueCat package identifier, e.g. "$rc_monthly". */
     package: string | null
     packageType: string | null
-    /** Normalized store offers (filled by newer Despia builds). */
+    /** Reserved: always empty today — no current build emits a per-product offer list. */
     offers?: PlanOffer[]
   }
 
@@ -120,7 +120,7 @@ declare namespace revenuecat {
     desc: string
     price: PlanPrice
     period: PlanPeriod | null
-    /** Free trial, when the store offers one. eligible: null = the store decides at purchase. */
+    /** Free trial, when the store offers one. `eligible` is always null today: the store enforces eligibility at purchase, so a second trial can never be granted. */
     trial: { days: number, eligible: boolean | null } | null
     /** Paid introductory offer (pay-as-you-go / pay-up-front), when present. */
     intro: {
@@ -130,6 +130,7 @@ declare namespace revenuecat {
       period: PlanPeriod | null
       cycles: number
     } | null
+    /** Reserved: always empty today — no current build emits a per-product offer list. */
     offers: PlanOffer[]
   }
 

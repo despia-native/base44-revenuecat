@@ -71,6 +71,15 @@ gates fail closed.)
   today, and `BuyOptions.offer` is marked deprecated in the types. The option
   is still accepted and still forwarded, so nothing breaks when the native
   side ships it.
+- **`plan.offers` was documented as "filled by newer builds". It is always
+  empty.** Neither native bridge emits a per-product offer list, so the array
+  is reserved, not conditionally populated. Same correction for
+  `trial.eligible` / `intro.eligible`, which are always `null` — the store
+  enforces eligibility at purchase, so that is by design rather than a gap to
+  work around.
+- **Android paywall purchases resolve `product` and `transaction` as `null`**
+  (the native paywall result exposes only customer info). Documented, with
+  the guidance to branch on `ok`/`cancelled`/`entitlements` instead.
 - **A misspelled offering id silently shows your default offering.** Both
   native bridges fall back to the default offering when `paywall(id)` names
   an offering that does not exist, so a full-price paywall appears where a

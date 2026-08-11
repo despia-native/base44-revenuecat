@@ -148,11 +148,16 @@ Each plan is the same JSON on iOS and Android:
   period: { iso: 'P1M', value: 1, unit: 'month' },
   trial:  { days: 7, eligible: null },   // free trial, when configured (eligible: null = the store decides at purchase)
   intro:  null,                          // or { type: 'payg'|'upfront', eligible, price, period, cycles }
-  offers: []                             // normalized store offers (newer builds)
+  offers: []                             // reserved: always empty today, see below
 }
 ```
 
 `price.text` is **always** the value to display. Never construct a currency string yourself, and never hardcode a price. On legacy classic-runtime builds an intro offer's numeric `price.value` can be `null` (the channel only reports the display string) — render `price.text` and never treat null as 0.
+
+Two fields are reserved for native work that has not shipped yet, so don't branch on them:
+
+- **`plan.offers` is always `[]`.** No current build emits a per-product offer list, so treat it as empty rather than "no offers configured".
+- **`trial.eligible` and `intro.eligible` are always `null`**, meaning "the store decides at purchase". That is not a gap you need to fill: Apple and Google enforce eligibility themselves at the moment of purchase, so a customer can never be granted a second free trial even if you show them one.
 
 ### `revenuecat.products()`: App Store / Google Play products with live pricing
 
@@ -276,6 +281,8 @@ if (result.ok) unlockPremium()
 ```
 
 One resolved promise per presentation. The paywall renders natively, shows each user their own currency, and is A/B-testable and restylable from the RevenueCat dashboard **without an app update**. That is the strongest option for conversion.
+
+Branch on `result.ok` / `result.cancelled`, not on which product was bought: **on Android a paywall purchase resolves `product` and `transaction` as `null`** (the native paywall result exposes only the customer info). `result.entitlements` is populated on both platforms, so gate on that, or call `has()` / `status()` afterwards.
 
 ### `revenuecat.has(entitlement)`: the client gate
 
